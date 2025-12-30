@@ -14,9 +14,9 @@ from inspect_ai.model import ChatMessageAssistant, ModelOutput
 from inspect_ai.scorer import Target, value_to_float
 from inspect_ai.solver import TaskState
 
-from inspect_bridge import load_inspect_as_env
-from inspect_bridge.loader import get_inspect_dataset
-from inspect_bridge.tasks import load_inspect_task
+from inspect_verifiers_bridge import load_inspect_as_env
+from inspect_verifiers_bridge.loader import get_inspect_dataset
+from inspect_verifiers_bridge.tasks import load_inspect_task
 
 from .fake_tasks import (
     chat_input,
