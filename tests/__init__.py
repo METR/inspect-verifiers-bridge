@@ -1,1 +1,1 @@
-# Integration tests for inspect_bridge
+# Integration tests for inspect_verifiers_bridge

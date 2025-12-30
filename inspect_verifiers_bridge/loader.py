@@ -8,9 +8,9 @@ import verifiers as vf
 from datasets import Dataset as HFDataset
 from inspect_ai import Task
 
-from inspect_bridge import dataset as ds
-from inspect_bridge import scoring, tasks
-from inspect_bridge.sandbox import SandboxConfig, SandboxManager
+from inspect_verifiers_bridge import dataset as ds
+from inspect_verifiers_bridge import scoring, tasks
+from inspect_verifiers_bridge.sandbox import SandboxConfig, SandboxManager
 
 
 def load_inspect_as_env(

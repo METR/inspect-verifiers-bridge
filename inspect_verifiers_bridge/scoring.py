@@ -18,7 +18,7 @@ from inspect_ai.model import (
 from inspect_ai.scorer import Score, Scorer, Target, value_to_float
 from inspect_ai.solver import TaskState
 
-from inspect_bridge.sandbox import SandboxManager, sandbox_context
+from inspect_verifiers_bridge.sandbox import SandboxManager, sandbox_context
 
 # Type alias for model name to avoid strict type checking issues
 MODEL_NAME = "bridge-model"
