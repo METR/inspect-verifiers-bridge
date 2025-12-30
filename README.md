@@ -21,7 +21,7 @@ Or for development:
 
 ```bash
 git clone <repo>
-cd inspect_bridge
+cd inspect_verifiers_bridge
 uv sync
 ```
 
@@ -29,7 +29,7 @@ uv sync
 
 ```python
 from inspect_evals.apps import apps
-from inspect_bridge import load_inspect_as_env
+from inspect_verifiers_bridge import load_inspect_as_env
 
 # Load an Inspect task as a Verifiers environment
 env = load_inspect_as_env(
@@ -86,7 +86,7 @@ def load_inspect_as_env(
 Convenience function to just get the HuggingFace dataset from an Inspect task.
 
 ```python
-from inspect_bridge.loader import get_inspect_dataset
+from inspect_verifiers_bridge.loader import get_inspect_dataset
 
 dataset = get_inspect_dataset(apps, max_samples=50)
 print(dataset[0])  # {'prompt': ..., 'answer': ..., 'info': ..., 'id': ...}
@@ -97,7 +97,7 @@ print(dataset[0])  # {'prompt': ..., 'answer': ..., 'info': ..., 'id': ...}
 Load and introspect an Inspect task without converting it.
 
 ```python
-from inspect_bridge.tasks import load_inspect_task
+from inspect_verifiers_bridge.tasks import load_inspect_task
 
 task_info = load_inspect_task(apps)
 print(f"Task: {task_info.name}")
@@ -206,7 +206,7 @@ Tests cover:
 ## Architecture
 
 ```
-inspect_bridge/
+inspect_verifiers_bridge/
 ├── __init__.py      # Public API (load_inspect_as_env)
 ├── loader.py        # Main loader and environment creation
 ├── tasks.py         # Task introspection utilities
