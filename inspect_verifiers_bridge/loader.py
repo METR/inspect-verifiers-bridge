@@ -13,7 +13,7 @@ from inspect_verifiers_bridge import scoring, tasks
 from inspect_verifiers_bridge.sandbox import SandboxConfig, SandboxManager
 
 
-def load_inspect_as_env(
+def load_environment(
     task: Callable[..., Task],
     *,
     scoring_mode: Literal["live", "custom"] = "live",

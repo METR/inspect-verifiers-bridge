@@ -14,7 +14,7 @@ from inspect_ai.model import ChatMessageAssistant, ModelOutput
 from inspect_ai.scorer import Target, value_to_float
 from inspect_ai.solver import TaskState
 
-from inspect_verifiers_bridge import load_inspect_as_env
+from inspect_verifiers_bridge import load_environment
 from inspect_verifiers_bridge.loader import get_inspect_dataset
 from inspect_verifiers_bridge.tasks import load_inspect_task
 
@@ -142,7 +142,7 @@ class TestScoringComparison:
         self, task_fn, sample_idx: int, completion: str
     ) -> float:
         """Score using the bridge."""
-        env = load_inspect_as_env(task_fn, scoring_mode="live", sandbox_type="local")
+        env = load_environment(task_fn, scoring_mode="live", sandbox_type="local")
 
         sample = env.dataset[sample_idx]
         prompt_messages = [{"role": "user", "content": sample["prompt"]}]
@@ -240,7 +240,7 @@ class TestEnvironmentCreation:
 
     def test_single_turn_env_creation(self):
         """Test creating a SingleTurnEnv."""
-        env = load_inspect_as_env(
+        env = load_environment(
             simple_math,
             scoring_mode="live",
             env_type="single_turn",
@@ -254,9 +254,7 @@ class TestEnvironmentCreation:
 
     def test_system_prompt_extraction(self):
         """Test that system prompt is extracted from task."""
-        env = load_inspect_as_env(
-            simple_math, scoring_mode="live", sandbox_type="local"
-        )
+        env = load_environment(simple_math, scoring_mode="live", sandbox_type="local")
 
         assert env.system_prompt is not None
         assert "number" in env.system_prompt.lower()
@@ -269,7 +267,7 @@ class TestEnvironmentCreation:
             comp_text = str(completion)
             return 1.0 if answer and answer in comp_text else 0.0
 
-        env = load_inspect_as_env(
+        env = load_environment(
             simple_math,
             scoring_mode="custom",
             custom_reward_fn=custom_reward,
@@ -285,7 +283,7 @@ class TestEnvironmentCreation:
         assert task_info.sandbox_type == "docker"
 
         # But we can override to local
-        env = load_inspect_as_env(
+        env = load_environment(
             code_execution,
             scoring_mode="live",
             sandbox_type="local",
@@ -304,7 +302,7 @@ def add(a, b):
     return a + b
 ```"""
 
-        env = load_inspect_as_env(
+        env = load_environment(
             code_execution,
             scoring_mode="live",
             sandbox_type="local",
@@ -332,7 +330,7 @@ def add(a, b):
     return a - b  # Wrong!
 ```"""
 
-        env = load_inspect_as_env(
+        env = load_environment(
             code_execution,
             scoring_mode="live",
             sandbox_type="local",
@@ -360,7 +358,7 @@ def double(x):
     return x * 2
 ```"""
 
-        env = load_inspect_as_env(
+        env = load_environment(
             code_execution,
             scoring_mode="live",
             sandbox_type="docker",
@@ -388,7 +386,7 @@ class TestEdgeCases:
         """Test scoring with empty completion."""
 
         async def test():
-            env = load_inspect_as_env(
+            env = load_environment(
                 simple_math, scoring_mode="live", sandbox_type="local"
             )
             sample = env.dataset[0]
@@ -406,7 +404,7 @@ class TestEdgeCases:
 
     def test_max_samples_limit(self):
         """Test limiting number of samples."""
-        env = load_inspect_as_env(
+        env = load_environment(
             simple_math,
             scoring_mode="live",
             sandbox_type="local",
@@ -418,6 +416,6 @@ class TestEdgeCases:
     def test_task_with_no_system_prompt(self):
         """Test task without system message in solver."""
         # chat_input task doesn't have system_message in solver
-        env = load_inspect_as_env(chat_input, scoring_mode="live", sandbox_type="local")
+        env = load_environment(chat_input, scoring_mode="live", sandbox_type="local")
         # Should still work, system_prompt might be None
         assert env is not None
