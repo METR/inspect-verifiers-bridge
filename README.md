@@ -29,10 +29,10 @@ uv sync
 
 ```python
 from inspect_evals.apps import apps
-from inspect_verifiers_bridge import load_inspect_as_env
+from inspect_verifiers_bridge import load_environment
 
 # Load an Inspect task as a Verifiers environment
-env = load_inspect_as_env(
+env = load_environment(
     apps,
     scoring_mode="live",      # Use Inspect's native scorers
     sandbox_type="docker",    # Use Docker for code execution
@@ -46,12 +46,12 @@ print(f"System prompt: {env.system_prompt[:100]}...")
 
 ## API Reference
 
-### `load_inspect_as_env`
+### `load_environment`
 
 Main function to convert an Inspect task to a Verifiers environment.
 
 ```python
-def load_inspect_as_env(
+def load_environment(
     task: Callable[..., Task],
     *,
     scoring_mode: Literal["live", "custom"] = "live",
@@ -112,7 +112,7 @@ print(f"Has tools: {task_info.solver_has_tools}")
 Uses Inspect's native scorers directly. Supports all built-in scorers (`exact`, `includes`, `match`, `model_graded_fact`, etc.) and custom scorers.
 
 ```python
-env = load_inspect_as_env(
+env = load_environment(
     my_task,
     scoring_mode="live",
     sandbox_type="local",  # or "docker" for isolated execution
@@ -131,7 +131,7 @@ def my_reward(prompt, completion, answer, state, **kwargs):
     # state: dict containing 'info' with Inspect metadata
     return 1.0 if answer in str(completion) else 0.0
 
-env = load_inspect_as_env(
+env = load_environment(
     my_task,
     scoring_mode="custom",
     custom_reward_fn=my_reward,
@@ -147,10 +147,10 @@ For tasks that require code execution (like APPS, HumanEval), the bridge support
 
 ```python
 # Docker sandbox (default for tasks that specify sandbox="docker")
-env = load_inspect_as_env(apps, sandbox_type="docker")
+env = load_environment(apps, sandbox_type="docker")
 
 # Local sandbox (faster, less isolated)
-env = load_inspect_as_env(apps, sandbox_type="local")
+env = load_environment(apps, sandbox_type="local")
 ```
 
 ## Dataset Format
@@ -207,7 +207,7 @@ Tests cover:
 
 ```
 inspect_verifiers_bridge/
-├── __init__.py      # Public API (load_inspect_as_env)
+├── __init__.py      # Public API (load_environment)
 ├── loader.py        # Main loader and environment creation
 ├── tasks.py         # Task introspection utilities
 ├── dataset.py       # Sample → HuggingFace dataset conversion
