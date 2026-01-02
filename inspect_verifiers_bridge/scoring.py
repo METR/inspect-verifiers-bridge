@@ -175,15 +175,23 @@ def build_rubric_from_scorers(
 
     # Create reward functions for each scorer
     reward_funcs = []
-    for scorer in scorers:
+    for i, scorer in enumerate(scorers):
         func = partial(
             reward_from_inspect_scorer,
             scorer=scorer,
             sandbox_manager=sandbox_manager,
         )
         # Add __name__ attribute to partial function for Verifiers compatibility
-        scorer_name = getattr(scorer, "__name__", scorer.__class__.__name__)
-        func.__name__ = f"inspect_scorer_{scorer_name}"  # type: ignore[attr-defined]
+        # Use __qualname__ to get unique names (e.g., "expression_exact_match.<locals>.score")
+        # Extract the parent function name from qualname, or fall back to __name__ or class name
+        qualname = getattr(scorer, "__qualname__", "")
+        if ".<locals>." in qualname:
+            # Extract parent function name: "expression_exact_match.<locals>.score" -> "expression_exact_match"
+            scorer_name = qualname.split(".<locals>.")[0]
+        else:
+            scorer_name = getattr(scorer, "__name__", scorer.__class__.__name__)
+        # Add index suffix to guarantee uniqueness if there are duplicate names
+        func.__name__ = f"inspect_{scorer_name}_{i}"  # type: ignore[attr-defined]
         reward_funcs.append(func)
 
     return vf.Rubric(funcs=reward_funcs, weights=weights)  # type: ignore[arg-type]
