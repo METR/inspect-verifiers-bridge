@@ -4,7 +4,7 @@ description = "Bridge to convert Inspect AI tasks to Verifiers environments for 
 version = "0.1.0"
 requires-python = ">=3.10"
 dependencies = [
-    "inspect-ai>=0.3.153",
+    "inspect-ai~=0.3.158",
     "inspect-evals>=0.3.102",
     "verifiers>=0.1.8.post1",
     "datasets>=3.1.0",

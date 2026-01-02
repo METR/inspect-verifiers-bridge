@@ -23,8 +23,8 @@ def sample_to_row(sample: Sample, task_name: str) -> dict[str, Any]:
     """
     # Convert input to string question format
     # Verifiers expects a "question" column which it will format with system_prompt
-    question: str
     sample_input = sample.input
+    question: str = str(sample_input)
     if isinstance(sample_input, str):
         question = sample_input
     elif hasattr(sample_input, "__iter__") and not isinstance(sample_input, str):
@@ -36,8 +36,6 @@ def sample_to_row(sample: Sample, task_name: str) -> dict[str, Any]:
             if hasattr(msg, "role") and msg.role == "user"
         ]
         question = "\n".join(user_messages) if user_messages else str(sample_input)
-    else:
-        question = str(sample_input)
 
     # Convert target to string answer when possible
     answer = _target_to_text(sample.target)

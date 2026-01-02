@@ -19,12 +19,15 @@ from inspect_verifiers_bridge.loader import get_inspect_dataset
 from inspect_verifiers_bridge.tasks import load_inspect_task
 
 from .fake_tasks import (
+    assistant_only_input,
     chat_input,
     code_execution,
+    mixed_messages,
     multiple_choice,
     simple_math,
     trivia_includes,
     with_metadata,
+    with_tool_calls,
 )
 
 
@@ -88,6 +91,62 @@ class TestDatasetConversion:
             raw_target = row["info"]["inspect_target_raw"]
             assert isinstance(raw_target, list)
             assert all(isinstance(t, str) for t in raw_target)
+
+    def test_tool_call_messages(self):
+        """Test that samples with tool calls are converted correctly."""
+        hf_dataset = get_inspect_dataset(with_tool_calls)
+
+        assert len(hf_dataset) == 2
+
+        for row in hf_dataset:
+            # Question should be a string containing user messages
+            assert isinstance(row["question"], str)
+            assert len(row["question"]) > 0
+
+            # Metadata should indicate tool calls
+            assert row["info"]["inspect_metadata"]["has_tool_calls"] is True
+
+    def test_tool_call_extracts_user_content(self):
+        """Test that tool call samples extract user message content correctly."""
+        hf_dataset = get_inspect_dataset(with_tool_calls)
+
+        # First sample has two user messages
+        first_row = hf_dataset[0]
+        # Should contain content from user messages
+        assert "weather" in first_row["question"].lower() or "London" in first_row["question"]
+
+        # Second sample has one user message about calculation
+        second_row = hf_dataset[1]
+        assert "15" in second_row["question"] or "23" in second_row["question"]
+
+    def test_assistant_only_input(self):
+        """Test that samples with only assistant messages (no user) are handled."""
+        hf_dataset = get_inspect_dataset(assistant_only_input)
+
+        assert len(hf_dataset) == 1
+        row = hf_dataset[0]
+
+        # Question should be empty or contain something reasonable
+        # since there's no user message
+        assert isinstance(row["question"], str)
+
+    def test_mixed_message_types(self):
+        """Test that mixed user/assistant conversations are converted correctly."""
+        hf_dataset = get_inspect_dataset(mixed_messages)
+
+        assert len(hf_dataset) == 2
+
+        # First sample has user messages about coding
+        first_row = hf_dataset[0]
+        assert isinstance(first_row["question"], str)
+        # Should contain user messages joined
+        assert "hello" in first_row["question"].lower() or "name" in first_row["question"].lower()
+
+        # Second sample has multiple turns
+        second_row = hf_dataset[1]
+        assert second_row["info"]["inspect_metadata"]["turn_count"] == 5
+        # Question should contain user message content
+        assert isinstance(second_row["question"], str)
 
 
 class TestScoringComparison:

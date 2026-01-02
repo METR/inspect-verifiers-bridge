@@ -300,3 +300,140 @@ def with_metadata() -> Task:
         ],
         scorer=includes(),
     )
+
+
+# =============================================================================
+# Task 7: Multi-turn conversation with tool calls
+# =============================================================================
+from inspect_ai.model import ChatMessageAssistant, ChatMessageTool
+from inspect_ai.tool import ToolCall, ToolFunction
+
+
+# Sample with assistant message containing tool calls
+TOOL_CALL_SAMPLES = [
+    Sample(
+        input=[
+            ChatMessageSystem(content="You are a helpful assistant with access to tools."),
+            ChatMessageUser(content="What's the weather in Paris?"),
+            ChatMessageAssistant(
+                content="I'll check the weather for you.",
+                tool_calls=[
+                    ToolCall(
+                        id="call_123",
+                        function="get_weather",
+                        arguments={"location": "Paris"},
+                        type="function",
+                    )
+                ],
+            ),
+            ChatMessageTool(
+                content="Weather in Paris: 22°C, sunny",
+                tool_call_id="call_123",
+                function="get_weather",
+            ),
+            ChatMessageUser(content="Thanks! What about London?"),
+        ],
+        target="London",
+        id="tool_1",
+        metadata={"has_tool_calls": True},
+    ),
+    Sample(
+        input=[
+            ChatMessageSystem(content="You are a math assistant with a calculator."),
+            ChatMessageUser(content="Calculate 15 * 23"),
+            ChatMessageAssistant(
+                content="Let me calculate that.",
+                tool_calls=[
+                    ToolCall(
+                        id="calc_001",
+                        function="calculator",
+                        arguments={"expression": "15 * 23"},
+                        type="function",
+                    )
+                ],
+            ),
+            ChatMessageTool(
+                content="345",
+                tool_call_id="calc_001",
+                function="calculator",
+            ),
+        ],
+        target="345",
+        id="tool_2",
+        metadata={"has_tool_calls": True},
+    ),
+]
+
+
+@task
+def with_tool_calls() -> Task:
+    """Task with tool call messages in the input."""
+    return Task(
+        dataset=TOOL_CALL_SAMPLES,
+        solver=[generate()],
+        scorer=includes(),
+    )
+
+
+# =============================================================================
+# Task 8: Assistant-only messages (no user content at start)
+# =============================================================================
+ASSISTANT_ONLY_SAMPLES = [
+    Sample(
+        input=[
+            ChatMessageSystem(content="Continue the story."),
+            ChatMessageAssistant(content="Once upon a time, there was a brave knight..."),
+        ],
+        target="knight",
+        id="assistant_1",
+    ),
+]
+
+
+@task
+def assistant_only_input() -> Task:
+    """Task where input starts with assistant message (continuation)."""
+    return Task(
+        dataset=ASSISTANT_ONLY_SAMPLES,
+        solver=[generate()],
+        scorer=includes(),
+    )
+
+
+# =============================================================================
+# Task 9: Mixed message types
+# =============================================================================
+MIXED_MESSAGE_SAMPLES = [
+    Sample(
+        input=[
+            ChatMessageSystem(content="You are a coding assistant."),
+            ChatMessageUser(content="Write a hello world function"),
+            ChatMessageAssistant(content="```python\ndef hello():\n    print('Hello')\n```"),
+            ChatMessageUser(content="Now make it take a name parameter"),
+        ],
+        target="name",
+        id="mixed_1",
+    ),
+    Sample(
+        input=[
+            ChatMessageUser(content="First message"),
+            ChatMessageAssistant(content="Response 1"),
+            ChatMessageUser(content="Second message"),
+            ChatMessageAssistant(content="Response 2"),
+            ChatMessageUser(content="Final question?"),
+        ],
+        target="answer",
+        id="mixed_2",
+        metadata={"turn_count": 5},
+    ),
+]
+
+
+@task
+def mixed_messages() -> Task:
+    """Task with mixed user/assistant messages (multi-turn)."""
+    return Task(
+        dataset=MIXED_MESSAGE_SAMPLES,
+        solver=[generate()],
+        scorer=includes(),
+    )
