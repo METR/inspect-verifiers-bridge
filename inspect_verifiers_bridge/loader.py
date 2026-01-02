@@ -6,7 +6,7 @@ from typing import Any, Callable, Literal
 
 import verifiers as vf
 from datasets import Dataset as HFDataset
-from inspect_ai import Task
+from inspect_ai import Task  # Still needed for type hints
 
 from inspect_verifiers_bridge import dataset as ds
 from inspect_verifiers_bridge import scoring, tasks
@@ -53,14 +53,17 @@ def load_environment(
     # Load and introspect the task
     task_info = tasks.load_inspect_task(task, **task_kwargs)
 
-    # Extract system prompt early (before dataset conversion)
-    effective_system_prompt = system_prompt or _extract_system_prompt(task_info.task)
+    # Use provided system prompt or the one extracted during task introspection
+    effective_system_prompt = system_prompt or task_info.system_prompt
 
-    # Convert dataset with system prompt included in each sample
+    # Convert dataset with solver-extracted prompt modifications
     hf_dataset = ds.inspect_dataset_to_hf(
         task_info.dataset,
         task_name=task_info.name,
         system_prompt=effective_system_prompt,
+        prompt_template=task_info.prompt_template,
+        multiple_choice_template=task_info.multiple_choice_template,
+        user_messages=task_info.user_messages or None,
         max_samples=max_samples,
     )
 
@@ -124,55 +127,6 @@ def load_environment(
         raise ValueError(f"Unknown env_type: {env_type}")
 
 
-def _extract_system_prompt(task: Task) -> str | None:
-    """Extract system prompt from task solver chain if possible.
-
-    Looks for both system_message and prompt_template solvers.
-    """
-    solver = task.solver
-    system_message = None
-    prompt_template = None
-
-    # If it's a Chain, look at the solver functions
-    if hasattr(solver, "_solvers"):
-        solvers_list = getattr(solver, "_solvers", [])
-        for s in solvers_list:
-            func_name = getattr(s, "__qualname__", "")
-            closure = getattr(s, "__closure__", None)
-
-            # Extract system_message
-            if "system_message" in func_name and closure:
-                for cell in closure:
-                    content = getattr(cell, "cell_contents", None)
-                    if isinstance(content, str) and len(content) > 10:
-                        system_message = content
-                        break
-
-            # Extract prompt_template
-            elif "prompt_template" in func_name and closure:
-                for cell in closure:
-                    content = getattr(cell, "cell_contents", None)
-                    # prompt_template template is a string with {prompt} placeholder
-                    if (
-                        isinstance(content, str)
-                        and len(content) > 20
-                        and "{prompt}" in content
-                    ):
-                        # Remove the {prompt} placeholder and use as instructions
-                        prompt_template = content.replace("{prompt}", "").strip()
-                        break
-
-    # Combine system message and prompt template if both exist
-    if system_message and prompt_template:
-        return f"{system_message}\n\n{prompt_template}"
-    elif prompt_template:
-        return prompt_template
-    elif system_message:
-        return system_message
-
-    return None
-
-
 def get_inspect_dataset(
     task: Callable[..., Task],
     max_samples: int | None = None,
@@ -194,10 +148,13 @@ def get_inspect_dataset(
         HuggingFace Dataset
     """
     task_info = tasks.load_inspect_task(task, **task_kwargs)
-    effective_system_prompt = system_prompt or _extract_system_prompt(task_info.task)
+    effective_system_prompt = system_prompt or task_info.system_prompt
     return ds.inspect_dataset_to_hf(
         task_info.dataset,
         task_name=task_info.name,
         system_prompt=effective_system_prompt,
+        prompt_template=task_info.prompt_template,
+        multiple_choice_template=task_info.multiple_choice_template,
+        user_messages=task_info.user_messages or None,
         max_samples=max_samples,
     )

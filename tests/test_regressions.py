@@ -5,11 +5,16 @@ These tests ensure that previously fixed bugs don't reoccur.
 """
 
 import asyncio
+from typing import Any, cast
 
 import pytest
-from inspect_ai.scorer import exact, scorer
-from inspect_ai.scorer import Score, Scorer, Target, CORRECT
+from inspect_ai.scorer import CORRECT, Score, Scorer, Target, exact, scorer
 from inspect_ai.solver import TaskState
+from inspect_ai.util._sandbox.environment import (
+    SandboxEnvironment,
+    SandboxEnvironmentConfigType,
+)
+from inspect_ai.util._subprocess import ExecResult
 
 from inspect_verifiers_bridge.scoring import build_rubric_from_scorers
 
@@ -25,7 +30,7 @@ class TestScorerNaming:
     Fix: Extract unique names from __qualname__ and add index suffix.
     """
 
-    def test_scorers_get_unique_names(self):
+    def test_scorers_get_unique_names(self) -> None:
         """Test that scorers with same __name__ get unique function names."""
 
         # Create multiple scorers that all have __name__ = "score"
@@ -54,7 +59,8 @@ class TestScorerNaming:
 
         # All inner functions have __name__ = "score"
         for s in scorers:
-            assert s.__name__ == "score"
+            # Scorer is a callable, access __name__ via cast
+            assert cast(Any, s).__name__ == "score"
 
         # Build rubric
         rubric = build_rubric_from_scorers(scorers)
@@ -71,7 +77,7 @@ class TestScorerNaming:
         assert "_1" in names[1]
         assert "_2" in names[2]
 
-    def test_scorer_names_include_index(self):
+    def test_scorer_names_include_index(self) -> None:
         """Test that scorer names include index suffix for guaranteed uniqueness."""
         # Use the same scorer twice
         scorers = [exact(), exact()]
@@ -84,7 +90,7 @@ class TestScorerNaming:
         assert "_1" in names[1]
         assert names[0] != names[1]
 
-    def test_qualname_extraction(self):
+    def test_qualname_extraction(self) -> None:
         """Test that __qualname__ is properly parsed to extract parent function name."""
         # Use a built-in scorer which has a cleaner qualname
         from inspect_ai.scorer import exact
@@ -97,6 +103,42 @@ class TestScorerNaming:
         name = rubric.funcs[0].__name__
         assert "exact" in name.lower() or "score" in name.lower()
         assert "_0" in name
+
+
+class MockSandbox(SandboxEnvironment):
+    """Mock sandbox for testing."""
+
+    def __init__(self, name: str = "mock") -> None:
+        self.name = name
+
+    async def exec(
+        self,
+        cmd: list[str],
+        input: str | bytes | None = None,  # noqa: A002
+        cwd: str | None = None,
+        env: dict[str, str] | None = None,
+        user: str | None = None,
+        timeout: int | None = None,
+        timeout_retry: bool = True,
+        concurrency: bool = True,
+    ) -> ExecResult[str]:
+        return ExecResult(success=True, returncode=0, stdout="", stderr="")
+
+    async def write_file(self, file: str, contents: str | bytes) -> None:
+        pass
+
+    async def read_file(self, file: str, text: bool = True) -> str | bytes:  # type: ignore[override]
+        return "" if text else b""
+
+    @classmethod
+    async def sample_cleanup(
+        cls,
+        task_name: str,
+        config: SandboxEnvironmentConfigType | None,
+        environments: dict[str, "SandboxEnvironment"],
+        interrupted: bool,
+    ) -> None:
+        pass
 
 
 class TestSandboxContext:
@@ -114,7 +156,7 @@ class TestSandboxContext:
     """
 
     @pytest.mark.asyncio
-    async def test_sandbox_context_sets_all_contextvars(self):
+    async def test_sandbox_context_sets_all_contextvars(self) -> None:
         """Test that sandbox_context sets all required ContextVars."""
         from inspect_ai.util._sandbox.context import (
             sandbox_default_context_var,
@@ -124,11 +166,7 @@ class TestSandboxContext:
 
         from inspect_verifiers_bridge.sandbox import sandbox_context
 
-        # Create a mock sandbox dict
-        class MockSandbox:
-            pass
-
-        mock_sandboxes = {"default": MockSandbox()}
+        mock_sandboxes: dict[str, SandboxEnvironment] = {"default": MockSandbox()}
 
         async with sandbox_context(mock_sandboxes):
             # All three ContextVars should be set
@@ -145,7 +183,7 @@ class TestSandboxContext:
         # We can't easily test this without knowing initial state
 
     @pytest.mark.asyncio
-    async def test_sandbox_context_concurrent_access(self):
+    async def test_sandbox_context_concurrent_access(self) -> None:
         """Test that sandbox_context works correctly with concurrent coroutines."""
         from inspect_ai.util._sandbox.context import (
             sandbox_default_context_var,
@@ -154,14 +192,12 @@ class TestSandboxContext:
 
         from inspect_verifiers_bridge.sandbox import sandbox_context
 
-        class MockSandbox:
-            def __init__(self, name: str):
-                self.name = name
+        results: list[dict[str, Any]] = []
 
-        results = []
-
-        async def check_context(sandbox_name: str):
-            mock_sandboxes = {sandbox_name: MockSandbox(sandbox_name)}
+        async def check_context(sandbox_name: str) -> None:
+            mock_sandboxes: dict[str, SandboxEnvironment] = {
+                sandbox_name: MockSandbox(sandbox_name)
+            }
             async with sandbox_context(mock_sandboxes):
                 # Small delay to simulate work and encourage interleaving
                 await asyncio.sleep(0.01)
@@ -192,19 +228,16 @@ class TestSandboxContext:
             assert r["expected"] == r["got_default"]
 
     @pytest.mark.asyncio
-    async def test_sandbox_context_default_name_selection(self):
+    async def test_sandbox_context_default_name_selection(self) -> None:
         """Test that default sandbox name is correctly selected from dict keys."""
         from inspect_ai.util._sandbox.context import sandbox_default_context_var
 
         from inspect_verifiers_bridge.sandbox import sandbox_context
 
-        class MockSandbox:
-            pass
-
         # Test with multiple sandboxes - first key should be default
-        mock_sandboxes = {
-            "first": MockSandbox(),
-            "second": MockSandbox(),
+        mock_sandboxes: dict[str, SandboxEnvironment] = {
+            "first": MockSandbox("first"),
+            "second": MockSandbox("second"),
         }
 
         async with sandbox_context(mock_sandboxes):
@@ -212,7 +245,7 @@ class TestSandboxContext:
             assert default == "first"
 
     @pytest.mark.asyncio
-    async def test_sandbox_context_empty_sandboxes(self):
+    async def test_sandbox_context_empty_sandboxes(self) -> None:
         """Test that sandbox_context handles empty sandbox dict."""
         from inspect_ai.util._sandbox.context import sandbox_default_context_var
 
@@ -224,6 +257,11 @@ class TestSandboxContext:
             assert default == "default"
 
 
+def _row(item: Any) -> dict[str, Any]:
+    """Convert HuggingFace dataset item to dict for type safety."""
+    return dict(item)  # type: ignore[arg-type]
+
+
 class TestSandboxScoringConcurrent:
     """
     Test that sandbox-based scoring works with concurrent rollouts.
@@ -233,7 +271,7 @@ class TestSandboxScoringConcurrent:
     """
 
     @pytest.mark.asyncio
-    async def test_multiple_concurrent_scoring_calls(self):
+    async def test_multiple_concurrent_scoring_calls(self) -> None:
         """Test that multiple concurrent scoring calls all succeed."""
         from inspect_verifiers_bridge import load_environment
 
@@ -250,15 +288,22 @@ def add(a, b):
     return a + b
 ```"""
 
-        sample = env.dataset[0]
+        dataset = env.dataset
+        assert dataset is not None
+        sample = _row(dataset[0])
 
-        async def score_once():
-            return await env.rubric.funcs[0](
+        async def score_once() -> float:
+            reward_fn = env.rubric.funcs[0]
+            result = reward_fn(
                 prompt=sample["prompt"],
                 completion=[{"role": "assistant", "content": correct_code}],
                 answer=sample["answer"],
                 state={"info": sample["info"]},
             )
+            # result may be a coroutine or a value
+            if asyncio.iscoroutine(result):
+                result = await result
+            return float(cast(float, result))
 
         # Run multiple scoring calls concurrently (simulating multiple rollouts)
         results = await asyncio.gather(

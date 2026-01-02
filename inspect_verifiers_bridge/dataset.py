@@ -10,10 +10,58 @@ from inspect_ai.dataset import Sample
 from inspect_ai.model import ChatMessage
 
 
+def _substitute_variables(template: str, metadata: dict[str, Any] | None) -> str:
+    """Substitute {variable} placeholders in template from metadata."""
+    if not metadata:
+        return template
+    result = template
+    for key, value in metadata.items():
+        placeholder = "{" + key + "}"
+        if placeholder in result:
+            result = result.replace(placeholder, str(value))
+    return result
+
+
+def _format_multiple_choice(
+    template: str,
+    question: str,
+    choices: list[str],
+) -> str:
+    """Format a multiple choice question using the template.
+
+    Args:
+        template: Template with {question}, {letters}, {choices} placeholders
+        question: The question text
+        choices: List of choice strings
+
+    Returns:
+        Formatted multiple choice prompt
+    """
+    # Generate letters for choices (A, B, C, D, ...)
+    letters = [chr(ord("A") + i) for i in range(len(choices))]
+    letters_str = ", ".join(letters)
+
+    # Format choices as "A) choice1\nB) choice2\n..."
+    formatted_choices = "\n".join(
+        f"{letter}) {choice}" for letter, choice in zip(letters, choices)
+    )
+
+    # Substitute placeholders
+    result = template
+    result = result.replace("{question}", question)
+    result = result.replace("{letters}", letters_str)
+    result = result.replace("{choices}", formatted_choices)
+
+    return result
+
+
 def sample_to_row(
     sample: Sample,
     task_name: str,
     system_prompt: str | None = None,
+    prompt_template: str | None = None,
+    multiple_choice_template: str | None = None,
+    user_messages: list[str] | None = None,
 ) -> dict[str, Any]:
     """
     Convert an Inspect Sample to a Verifiers-compatible dataset row.
@@ -21,17 +69,25 @@ def sample_to_row(
     Always uses the "prompt" column with a list of messages. This format:
     - Preserves full conversation history (multi-turn, tool calls, etc.)
     - Includes the system prompt in the message list
+    - Applies prompt_template to format user input
+    - Formats multiple choice questions with choices
+    - Appends additional user_messages (with variable substitution)
     - Works consistently for both string and chat message inputs
 
     Args:
         sample: An Inspect Sample object
         task_name: Name of the task (for tracking)
         system_prompt: System prompt to prepend (if not already in messages)
+        prompt_template: Template to format user input (e.g., "Question: {prompt}")
+        multiple_choice_template: Template for multiple choice formatting
+        user_messages: Additional user messages to append (may have {var} placeholders)
 
     Returns:
         Dictionary with prompt, answer, info, and id fields
     """
     sample_input = sample.input
+    metadata = sample.metadata
+    choices = sample.choices
 
     # Convert target to string answer when possible
     answer = _target_to_text(sample.target)
@@ -40,8 +96,8 @@ def sample_to_row(
     info: dict[str, Any] = {
         "inspect_sample_id": sample.id,
         "inspect_target_raw": sample.target,
-        "inspect_choices": sample.choices,
-        "inspect_metadata": sample.metadata or {},
+        "inspect_choices": choices,
+        "inspect_metadata": metadata or {},
         "inspect_sandbox": sample.sandbox,
         "inspect_files": sample.files,
         "inspect_setup": sample.setup,
@@ -55,7 +111,21 @@ def sample_to_row(
         # String input: convert to system + user messages
         if system_prompt:
             prompt_messages.append({"role": "system", "content": system_prompt})
-        prompt_messages.append({"role": "user", "content": sample_input})
+
+        # Determine how to format the user content
+        if multiple_choice_template and choices:
+            # Use multiple choice formatting
+            user_content = _format_multiple_choice(
+                multiple_choice_template, sample_input, choices
+            )
+        elif prompt_template:
+            # Apply prompt template
+            user_content = prompt_template.replace("{prompt}", sample_input)
+        else:
+            # Use raw input
+            user_content = sample_input
+
+        prompt_messages.append({"role": "user", "content": user_content})
     elif hasattr(sample_input, "__iter__") and not isinstance(sample_input, str):
         # Chat messages: convert to list[dict]
         prompt_messages = [
@@ -67,11 +137,30 @@ def sample_to_row(
             not prompt_messages or prompt_messages[0].get("role") != "system"
         ):
             prompt_messages.insert(0, {"role": "system", "content": system_prompt})
+        # Note: templates are not applied to chat messages (they have their own structure)
     else:
         # Fallback: convert to string as user message
         if system_prompt:
             prompt_messages.append({"role": "system", "content": system_prompt})
-        prompt_messages.append({"role": "user", "content": str(sample_input)})
+        raw_input = str(sample_input)
+
+        # Determine how to format the user content
+        if multiple_choice_template and choices:
+            user_content = _format_multiple_choice(
+                multiple_choice_template, raw_input, choices
+            )
+        elif prompt_template:
+            user_content = prompt_template.replace("{prompt}", raw_input)
+        else:
+            user_content = raw_input
+
+        prompt_messages.append({"role": "user", "content": user_content})
+
+    # Append additional user messages (with variable substitution from metadata)
+    if user_messages:
+        for msg_template in user_messages:
+            msg_content = _substitute_variables(msg_template, metadata)
+            prompt_messages.append({"role": "user", "content": msg_content})
 
     return {
         "prompt": prompt_messages,
@@ -158,6 +247,9 @@ def inspect_dataset_to_hf(
     dataset: InspectDataset,
     task_name: str,
     system_prompt: str | None = None,
+    prompt_template: str | None = None,
+    multiple_choice_template: str | None = None,
+    user_messages: list[str] | None = None,
     max_samples: int | None = None,
 ) -> HFDataset:
     """
@@ -167,6 +259,9 @@ def inspect_dataset_to_hf(
         dataset: An Inspect Dataset object
         task_name: Name of the task
         system_prompt: System prompt to include in each sample's prompt list
+        prompt_template: Template to format user input (e.g., "Question: {prompt}")
+        multiple_choice_template: Template for multiple choice formatting
+        user_messages: Additional user messages to append (may have {var} placeholders)
         max_samples: Optional limit on number of samples to convert
 
     Returns:
@@ -176,6 +271,15 @@ def inspect_dataset_to_hf(
     for i, sample in enumerate(dataset):
         if max_samples is not None and i >= max_samples:
             break
-        rows.append(sample_to_row(sample, task_name, system_prompt))
+        rows.append(
+            sample_to_row(
+                sample,
+                task_name,
+                system_prompt,
+                prompt_template,
+                multiple_choice_template,
+                user_messages,
+            )
+        )
 
     return HFDataset.from_list(rows)

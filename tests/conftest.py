@@ -2,9 +2,13 @@
 Pytest configuration and fixtures.
 """
 
+from typing import TYPE_CHECKING
 import shutil
 
 import pytest
+
+if TYPE_CHECKING:
+    from pytest import Config, Item
 
 
 def is_docker_available() -> bool:
@@ -28,7 +32,7 @@ def is_docker_available() -> bool:
 
 
 # Register custom markers
-def pytest_configure(config):
+def pytest_configure(config: "Config") -> None:
     config.addinivalue_line(
         "markers",
         "requires_docker: mark test as requiring Docker (skipped if Docker unavailable)",
@@ -36,7 +40,7 @@ def pytest_configure(config):
 
 
 # Skip tests marked with requires_docker if Docker is not available
-def pytest_collection_modifyitems(config, items):
+def pytest_collection_modifyitems(config: "Config", items: list["Item"]) -> None:
     if is_docker_available():
         return
 

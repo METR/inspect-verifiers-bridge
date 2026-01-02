@@ -30,7 +30,7 @@ num_examples = 5
 rollouts_per_example = 3
 
 [tool.basedpyright]
-ignore = ["**/*.ipynb", "tests/**"]
+ignore = ["**/*.ipynb"]
 typeCheckingMode = "strict"
 useLibraryCodeForTypes = true
 pythonVersion = "3.12"

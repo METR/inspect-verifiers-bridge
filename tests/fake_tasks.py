@@ -30,7 +30,7 @@ from inspect_ai.scorer import (
     match,
     scorer,
 )
-from inspect_ai.solver import TaskState, generate, system_message
+from inspect_ai.solver import TaskState, generate, prompt_template, system_message
 from inspect_ai.tool import ToolCall
 from inspect_ai.util import sandbox
 
@@ -66,6 +66,20 @@ def simple_math() -> Task:
         dataset=MATH_SAMPLES,
         solver=[
             system_message("Answer with just the number, nothing else."),
+            generate(),
+        ],
+        scorer=exact(),
+    )
+
+
+@task
+def simple_math_with_template() -> Task:
+    """Simple math task with exact match scoring."""
+    return Task(
+        dataset=MATH_SAMPLES,
+        solver=[
+            system_message("Answer with just the number, nothing else."),
+            prompt_template("Here is the question: {prompt}"),
             generate(),
         ],
         scorer=exact(),
@@ -199,7 +213,10 @@ def code_execution_scorer() -> Scorer:
 
         # Build test script
         raw_target = target.target
-        test_cases = raw_target if isinstance(raw_target, list) else [raw_target]
+        if isinstance(raw_target, str):
+            test_cases: list[str] = [raw_target]
+        else:
+            test_cases = list(raw_target)
         test_script = code + "\n\n" + "\n".join(test_cases)
 
         try:
