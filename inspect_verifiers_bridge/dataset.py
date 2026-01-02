@@ -14,28 +14,22 @@ def sample_to_row(sample: Sample, task_name: str) -> dict[str, Any]:
     """
     Convert an Inspect Sample to a Verifiers-compatible dataset row.
 
+    Verifiers supports two input formats:
+    - "question" column (string): Verifiers wraps with system_prompt + user message
+    - "prompt" column (list[ChatMessage]): Used directly as-is
+
+    We use:
+    - String inputs → "question" column (simpler, lets Verifiers handle formatting)
+    - Chat message inputs → "prompt" column (preserves full conversation history)
+
     Args:
         sample: An Inspect Sample object
         task_name: Name of the task (for tracking)
 
     Returns:
-        Dictionary with question, answer, info, and id fields
+        Dictionary with prompt/question, answer, info, and id fields
     """
-    # Convert input to string question format
-    # Verifiers expects a "question" column which it will format with system_prompt
     sample_input = sample.input
-    question: str = str(sample_input)
-    if isinstance(sample_input, str):
-        question = sample_input
-    elif hasattr(sample_input, "__iter__") and not isinstance(sample_input, str):
-        # For chat messages, extract just the user content
-        # (system messages will be handled via system_prompt parameter)
-        user_messages = [
-            msg.content if hasattr(msg, "content") else msg.text
-            for msg in sample_input  # type: ignore[union-attr]
-            if hasattr(msg, "role") and msg.role == "user"
-        ]
-        question = "\n".join(user_messages) if user_messages else str(sample_input)
 
     # Convert target to string answer when possible
     answer = _target_to_text(sample.target)
@@ -52,21 +46,79 @@ def sample_to_row(sample: Sample, task_name: str) -> dict[str, Any]:
         "inspect_task_name": task_name,
     }
 
-    return {
-        "question": question,
-        "answer": answer,
-        "info": info,
-        "id": sample.id,
-    }
+    # Determine input format
+    if isinstance(sample_input, str):
+        # String input: use "question" column, let Verifiers add system_prompt
+        return {
+            "question": sample_input,
+            "answer": answer,
+            "info": info,
+            "id": sample.id,
+        }
+    elif hasattr(sample_input, "__iter__") and not isinstance(sample_input, str):
+        # Chat messages: convert to list[dict] and use "prompt" column
+        # This preserves tool calls, assistant messages, multi-turn history
+        prompt_messages = [
+            _chat_message_to_dict(msg) for msg in sample_input  # type: ignore[union-attr]
+        ]
+        return {
+            "prompt": prompt_messages,
+            "answer": answer,
+            "info": info,
+            "id": sample.id,
+        }
+    else:
+        # Fallback: convert to string
+        return {
+            "question": str(sample_input),
+            "answer": answer,
+            "info": info,
+            "id": sample.id,
+        }
 
 
 def _chat_message_to_dict(msg: ChatMessage) -> dict[str, Any]:
-    """Convert an Inspect ChatMessage to a dictionary."""
+    """Convert an Inspect ChatMessage to a Verifiers-compatible dictionary.
+
+    Preserves:
+    - role: user, assistant, system, tool
+    - content: text content
+    - tool_calls: for assistant messages with tool use
+    - tool_call_id: for tool response messages
+    - function: tool function name for tool responses
+    """
     result: dict[str, Any] = {"role": msg.role}
-    if hasattr(msg, "content"):
+
+    # Get content (prefer .content, fall back to .text)
+    if hasattr(msg, "content") and msg.content is not None:
         result["content"] = msg.content
-    if hasattr(msg, "text"):
+    elif hasattr(msg, "text") and msg.text is not None:
         result["content"] = msg.text
+    else:
+        result["content"] = ""
+
+    # Preserve tool_calls for assistant messages
+    if hasattr(msg, "tool_calls") and msg.tool_calls:
+        result["tool_calls"] = [
+            {
+                "id": tc.id,
+                "type": getattr(tc, "type", "function"),
+                "function": {
+                    "name": tc.function,
+                    "arguments": tc.arguments
+                    if isinstance(tc.arguments, str)
+                    else str(tc.arguments),
+                },
+            }
+            for tc in msg.tool_calls
+        ]
+
+    # Preserve tool response metadata
+    if hasattr(msg, "tool_call_id") and msg.tool_call_id:
+        result["tool_call_id"] = msg.tool_call_id
+    if hasattr(msg, "function") and msg.function:
+        result["name"] = msg.function  # OpenAI format uses "name" for tool responses
+
     return result
 
 

@@ -7,8 +7,6 @@ These tests verify that the bridge correctly detects:
 - Various scorer configurations
 """
 
-import pytest
-
 from inspect_verifiers_bridge.tasks import (
     InspectTaskInfo,
     _solver_has_tools,
@@ -113,7 +111,9 @@ class TestScorerConfigurations:
         ]
 
         # Should have different types of equivalence checks
-        assert any("equivalance" in name or "equivalence" in name for name in scorer_names)
+        assert any(
+            "equivalance" in name or "equivalence" in name for name in scorer_names
+        )
         assert any("exact" in name for name in scorer_names)
         assert any("sympy" in name for name in scorer_names)
 
@@ -151,6 +151,7 @@ class TestToolDetectionHeuristic:
 
     def test_solver_has_tools_heuristic_with_tool_string(self):
         """Test that solver string containing 'tool' is detected."""
+
         # Create a mock solver that looks like it uses tools
         class MockToolSolver:
             def __str__(self):
@@ -277,10 +278,14 @@ class TestRealWorldScenarios:
             task_info = load_inspect_task(task_fn)
 
             # Should have sandbox
-            assert task_info.sandbox_type is not None, f"{task_fn.__name__} should have sandbox"
+            assert task_info.sandbox_type is not None, (
+                f"{task_fn.__name__} should have sandbox"
+            )
 
             # Should have at least one scorer
-            assert len(task_info.scorers) >= 1, f"{task_fn.__name__} should have scorers"
+            assert len(task_info.scorers) >= 1, (
+                f"{task_fn.__name__} should have scorers"
+            )
 
     def test_math_reasoning_task_detection(self):
         """Test that math reasoning tasks are properly identified."""
@@ -291,10 +296,14 @@ class TestRealWorldScenarios:
             task_info = load_inspect_task(task_fn)
 
             # Should NOT have sandbox
-            assert task_info.sandbox_type is None, f"{task_fn.__name__} should not have sandbox"
+            assert task_info.sandbox_type is None, (
+                f"{task_fn.__name__} should not have sandbox"
+            )
 
             # Should have at least one scorer
-            assert len(task_info.scorers) >= 1, f"{task_fn.__name__} should have scorers"
+            assert len(task_info.scorers) >= 1, (
+                f"{task_fn.__name__} should have scorers"
+            )
 
     def test_multiple_choice_task_detection(self):
         """Test that multiple choice tasks are properly identified."""
@@ -305,7 +314,11 @@ class TestRealWorldScenarios:
             task_info = load_inspect_task(task_fn)
 
             # Should NOT have sandbox
-            assert task_info.sandbox_type is None, f"{task_fn.__name__} should not have sandbox"
+            assert task_info.sandbox_type is None, (
+                f"{task_fn.__name__} should not have sandbox"
+            )
 
             # Should have exactly one choice scorer
-            assert len(task_info.scorers) == 1, f"{task_fn.__name__} should have one scorer"
+            assert len(task_info.scorers) == 1, (
+                f"{task_fn.__name__} should have one scorer"
+            )

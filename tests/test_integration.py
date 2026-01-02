@@ -61,14 +61,19 @@ class TestDatasetConversion:
             assert len(row["info"]["inspect_choices"]) == 4
 
     def test_chat_input_dataset(self):
-        """Test chat message input format is converted to question string."""
+        """Test chat message input format is preserved as prompt list."""
         hf_dataset = get_inspect_dataset(chat_input)
 
         for row in hf_dataset:
-            # Chat input should be converted to string (user messages only)
-            # System messages are handled via system_prompt parameter
-            assert isinstance(row["question"], str)
-            assert len(row["question"]) > 0
+            # Chat input should be converted to list of message dicts
+            # using "prompt" column (not "question") to preserve full history
+            assert "prompt" in row
+            assert isinstance(row["prompt"], list)
+            assert len(row["prompt"]) >= 1
+            # Check message structure
+            for msg in row["prompt"]:
+                assert "role" in msg
+                assert "content" in msg
 
     def test_metadata_preserved(self):
         """Test that metadata is fully preserved."""
@@ -93,60 +98,82 @@ class TestDatasetConversion:
             assert all(isinstance(t, str) for t in raw_target)
 
     def test_tool_call_messages(self):
-        """Test that samples with tool calls are converted correctly."""
+        """Test that samples with tool calls preserve full conversation history."""
         hf_dataset = get_inspect_dataset(with_tool_calls)
 
         assert len(hf_dataset) == 2
 
         for row in hf_dataset:
-            # Question should be a string containing user messages
-            assert isinstance(row["question"], str)
-            assert len(row["question"]) > 0
+            # Chat input should use "prompt" column with full message list
+            assert "prompt" in row
+            assert isinstance(row["prompt"], list)
+            assert len(row["prompt"]) > 0
 
             # Metadata should indicate tool calls
             assert row["info"]["inspect_metadata"]["has_tool_calls"] is True
 
-    def test_tool_call_extracts_user_content(self):
-        """Test that tool call samples extract user message content correctly."""
+    def test_tool_call_preserves_tool_structure(self):
+        """Test that tool call messages preserve tool_calls and tool_call_id."""
         hf_dataset = get_inspect_dataset(with_tool_calls)
 
-        # First sample has two user messages
         first_row = hf_dataset[0]
-        # Should contain content from user messages
-        assert "weather" in first_row["question"].lower() or "London" in first_row["question"]
 
-        # Second sample has one user message about calculation
-        second_row = hf_dataset[1]
-        assert "15" in second_row["question"] or "23" in second_row["question"]
+        # Find assistant message with tool calls
+        assistant_msgs = [m for m in first_row["prompt"] if m["role"] == "assistant"]
+        assert len(assistant_msgs) >= 1
+
+        # Check tool_calls are preserved
+        tool_call_msg = next(
+            (m for m in assistant_msgs if "tool_calls" in m), None
+        )
+        assert tool_call_msg is not None
+        assert len(tool_call_msg["tool_calls"]) > 0
+
+        # Find tool response message
+        tool_msgs = [m for m in first_row["prompt"] if m["role"] == "tool"]
+        assert len(tool_msgs) >= 1
+        assert "tool_call_id" in tool_msgs[0]
 
     def test_assistant_only_input(self):
-        """Test that samples with only assistant messages (no user) are handled."""
+        """Test that samples with only assistant messages preserve full history."""
         hf_dataset = get_inspect_dataset(assistant_only_input)
 
         assert len(hf_dataset) == 1
         row = hf_dataset[0]
 
-        # Question should be empty or contain something reasonable
-        # since there's no user message
-        assert isinstance(row["question"], str)
+        # Chat input should use "prompt" column
+        assert "prompt" in row
+        assert isinstance(row["prompt"], list)
+
+        # Should have system and assistant messages
+        roles = [m["role"] for m in row["prompt"]]
+        assert "system" in roles
+        assert "assistant" in roles
 
     def test_mixed_message_types(self):
-        """Test that mixed user/assistant conversations are converted correctly."""
+        """Test that mixed user/assistant conversations preserve full history."""
         hf_dataset = get_inspect_dataset(mixed_messages)
 
         assert len(hf_dataset) == 2
 
-        # First sample has user messages about coding
+        # First sample has multiple message types
         first_row = hf_dataset[0]
-        assert isinstance(first_row["question"], str)
-        # Should contain user messages joined
-        assert "hello" in first_row["question"].lower() or "name" in first_row["question"].lower()
+        assert "prompt" in first_row
+        assert isinstance(first_row["prompt"], list)
+
+        # Should have system, user, and assistant messages
+        roles = [m["role"] for m in first_row["prompt"]]
+        assert "system" in roles
+        assert "user" in roles
+        assert "assistant" in roles
 
         # Second sample has multiple turns
         second_row = hf_dataset[1]
         assert second_row["info"]["inspect_metadata"]["turn_count"] == 5
-        # Question should contain user message content
-        assert isinstance(second_row["question"], str)
+
+        # Should have alternating user/assistant messages
+        assert isinstance(second_row["prompt"], list)
+        assert len(second_row["prompt"]) == 5  # 5 messages total
 
 
 class TestScoringComparison:
