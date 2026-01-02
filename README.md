@@ -233,36 +233,33 @@ This section provides a detailed walkthrough of what happens when you call `load
 ┌─────────────────────────────────────────────────────────────────────────────┐
 │  1. TASK INTROSPECTION                                                      │
 │     load_inspect_task(task_fn) → InspectTaskInfo                            │
+│     Extracts: system_prompt, prompt_template, multiple_choice_template,     │
+│               user_messages, scorers, sandbox_type, unknown_solvers         │
 └─────────────────────────────────────────────────────────────────────────────┘
                                       │
                                       ▼
 ┌─────────────────────────────────────────────────────────────────────────────┐
-│  2. SYSTEM PROMPT EXTRACTION                                                │
-│     _extract_system_prompt(task) → str | None                               │
+│  2. DATASET CONVERSION                                                      │
+│     inspect_dataset_to_hf(dataset, templates...) → HuggingFace Dataset      │
+│     Applies: system_prompt, prompt_template, multiple_choice_template,      │
+│              user_messages (with variable substitution from metadata)       │
 └─────────────────────────────────────────────────────────────────────────────┘
                                       │
                                       ▼
 ┌─────────────────────────────────────────────────────────────────────────────┐
-│  3. DATASET CONVERSION                                                      │
-│     inspect_dataset_to_hf(dataset, system_prompt) → HuggingFace Dataset     │
-│     (system prompt embedded in each sample's "prompt" list)                 │
-└─────────────────────────────────────────────────────────────────────────────┘
-                                      │
-                                      ▼
-┌─────────────────────────────────────────────────────────────────────────────┐
-│  4. SANDBOX SETUP (if needed)                                               │
+│  3. SANDBOX SETUP (if needed)                                               │
 │     SandboxManager(config) → manages sandbox lifecycle                      │
 └─────────────────────────────────────────────────────────────────────────────┘
                                       │
                                       ▼
 ┌─────────────────────────────────────────────────────────────────────────────┐
-│  5. RUBRIC CREATION                                                         │
+│  4. RUBRIC CREATION                                                         │
 │     build_rubric_from_scorers(scorers) → Verifiers Rubric                   │
 └─────────────────────────────────────────────────────────────────────────────┘
                                       │
                                       ▼
 ┌─────────────────────────────────────────────────────────────────────────────┐
-│  6. ENVIRONMENT CREATION                                                    │
+│  5. ENVIRONMENT CREATION                                                    │
 │     vf.SingleTurnEnv | vf.ToolEnv → ready for training                      │
 └─────────────────────────────────────────────────────────────────────────────┘
 ```
@@ -271,7 +268,7 @@ This section provides a detailed walkthrough of what happens when you call `load
 
 ### Step 1: Task Introspection
 
-**Entry Point:** `loader.py:53-54`
+**Entry Point:** `loader.py:54`
 
 ```python
 task_info = tasks.load_inspect_task(task, **task_kwargs)
@@ -280,10 +277,10 @@ task_info = tasks.load_inspect_task(task, **task_kwargs)
 **What happens in `load_inspect_task()`:**
 
 ```python
-# tasks.py:40 - Invoke the task function to get a Task object
+# tasks.py - Invoke the task function to get a Task object
 task = task_fn(**task_kwargs)
 
-# tasks.py:43-48 - Extract sandbox type
+# Extract sandbox type
 sandbox_type = None
 if task.sandbox is not None:
     if isinstance(task.sandbox, str):
@@ -291,17 +288,35 @@ if task.sandbox is not None:
     elif hasattr(task.sandbox, "type"):
         sandbox_type = task.sandbox.type      # SandboxSpec object
 
-# tasks.py:51-57 - Normalize scorers to a list
+# Normalize scorers to a list
 scorers: list[Scorer] = []
 if task.scorer is not None:
     if isinstance(task.scorer, list):
-        scorers = task.scorer                 # Already a list
+        scorers = task.scorer
     else:
-        scorers = [task.scorer]               # Single scorer → list
+        scorers = [task.scorer]
 
-# tasks.py:60 - Check for tool usage (heuristic)
+# Check for tool usage (heuristic)
 solver_has_tools = _solver_has_tools(task.solver)
+
+# Extract solver information (system_prompt, templates, etc.)
+solver_info = _extract_solver_info(task)
 ```
+
+**Solver extraction (`_extract_solver_info`)** inspects the solver chain and extracts content from known built-in solvers:
+
+| Solver | Extracted As | Description |
+|--------|--------------|-------------|
+| `system_message` | `system_prompt` | System prompt text |
+| `prompt_template` | `prompt_template` | Template with `{prompt}` placeholder |
+| `chain_of_thought` | `prompt_template` | CoT template (also uses `{prompt}`) |
+| `multiple_choice` | `multiple_choice_template` | Template with `{question}`, `{letters}`, `{choices}` |
+| `user_message` | `user_messages` | Additional messages (may have `{var}` placeholders) |
+| `generate` | - | No extraction needed |
+| `use_tools` | - | Tracked via `solver_has_tools` flag |
+| `self_critique` | - | Warning emitted (complex multi-model flow) |
+
+Unknown/custom solvers are tracked in `unknown_solvers` and emit a warning.
 
 **Returns:** `InspectTaskInfo` dataclass with:
 - `task`: The Inspect Task object
@@ -310,115 +325,73 @@ solver_has_tools = _solver_has_tools(task.solver)
 - `scorers`: List of scorer functions
 - `sandbox_type`: "docker" | "local" | None
 - `solver_has_tools`: bool
+- `system_prompt`: str | None
+- `prompt_template`: str | None (template with `{prompt}`)
+- `multiple_choice_template`: str | None (template with `{question}`, `{letters}`, `{choices}`)
+- `user_messages`: list[str] (additional user messages, may have `{var}` placeholders)
+- `unknown_solvers`: list[str]
 - `metadata`: dict
 
----
-
-### Step 2: System Prompt Extraction
-
-**Entry Point:** `loader.py:56-57`
-
-```python
-effective_system_prompt = system_prompt or _extract_system_prompt(task_info.task)
-```
-
-System prompt extraction happens **before** dataset conversion so it can be embedded in each sample's prompt list.
-
-**Extraction logic:**
-
-```python
-# loader.py:127-173
-def _extract_system_prompt(task: Task) -> str | None:
-    solver = task.solver
-    system_message = None
-    prompt_template = None
-
-    # Check if solver is a Chain with multiple solvers
-    if hasattr(solver, "_solvers"):
-        for s in solver._solvers:
-            func_name = getattr(s, "__qualname__", "")
-            closure = getattr(s, "__closure__", None)
-
-            # Look for system_message solver
-            if "system_message" in func_name and closure:
-                for cell in closure:
-                    content = getattr(cell, "cell_contents", None)
-                    if isinstance(content, str) and len(content) > 10:
-                        system_message = content
-
-            # Look for prompt_template solver
-            elif "prompt_template" in func_name and closure:
-                for cell in closure:
-                    content = getattr(cell, "cell_contents", None)
-                    if isinstance(content, str) and "{prompt}" in content:
-                        # Remove placeholder, keep instructions
-                        prompt_template = content.replace("{prompt}", "").strip()
-
-    # Combine if both exist
-    if system_message and prompt_template:
-        return f"{system_message}\n\n{prompt_template}"
-    return prompt_template or system_message or None
-```
-
-**Example:** For a math task:
+**Example:** For a chain-of-thought task:
 
 ```python
 # Inspect task definition:
 solver=[
-    system_message("Answer with just the number."),
+    system_message("You are a math tutor."),
+    chain_of_thought(),
     generate(),
 ]
 
-# Extracted system_prompt:
-"Answer with just the number."
+# Extracted:
+# system_prompt: "You are a math tutor."
+# prompt_template: "{prompt}\n\nBefore answering, reason step-by-step..."
 ```
 
 ---
 
-### Step 3: Dataset Conversion
+### Step 2: Dataset Conversion
 
-**Entry Point:** `loader.py:59-64`
+**Entry Point:** `loader.py:60-68`
 
 ```python
 hf_dataset = ds.inspect_dataset_to_hf(
     task_info.dataset,
     task_name=task_info.name,
-    system_prompt=effective_system_prompt,  # Embedded in each sample
+    system_prompt=effective_system_prompt,
+    prompt_template=task_info.prompt_template,
+    multiple_choice_template=task_info.multiple_choice_template,
+    user_messages=task_info.user_messages or None,
     max_samples=max_samples,
 )
 ```
 
 **What happens in `inspect_dataset_to_hf()`:**
 
-```python
-# dataset.py:145-168 - Iterate over samples
-rows = []
-for i, sample in enumerate(dataset):
-    if max_samples is not None and i >= max_samples:
-        break
-    rows.append(sample_to_row(sample, task_name, system_prompt))
-```
+For each sample, `sample_to_row()` builds the prompt as a list of messages, applying templates:
 
-**Sample conversion (`sample_to_row`):**
+1. **System message**: Added first (if `system_prompt` is provided)
+2. **User message**: Formatted based on available templates:
+   - If `multiple_choice_template` + choices: Format with `{question}`, `{letters}`, `{choices}`
+   - If `prompt_template`: Replace `{prompt}` with sample input
+   - Otherwise: Use raw sample input
+3. **Additional user messages**: Appended from `user_messages` with `{var}` substitution from metadata
 
-All samples use the `"prompt"` column with a list of messages. The system prompt is included at the start.
+**Template application examples:**
 
 ```python
-# dataset.py:51-79 - Build prompt as list of messages
-prompt_messages: list[dict[str, Any]] = []
+# prompt_template: "Question: {prompt}"
+# Input: "What is 2+2?"
+# Result: "Question: What is 2+2?"
 
-if isinstance(sample_input, str):
-    # String input: convert to system + user messages
-    if system_prompt:
-        prompt_messages.append({"role": "system", "content": system_prompt})
-    prompt_messages.append({"role": "user", "content": sample_input})
+# multiple_choice_template: "{question}\n\n{choices}\n\nAnswer: {letters}"
+# Input: "What color is the sky?"
+# Choices: ["Red", "Blue", "Green"]
+# Result: "What color is the sky?\n\nA) Red\nB) Blue\nC) Green\n\nAnswer: A, B, C"
 
-elif hasattr(sample_input, "__iter__"):
-    # Chat messages: convert to list[dict]
-    prompt_messages = [_chat_message_to_dict(msg) for msg in sample_input]
-    # Prepend system prompt if not already present
-    if system_prompt and prompt_messages[0].get("role") != "system":
-        prompt_messages.insert(0, {"role": "system", "content": system_prompt})
+# user_message with variable substitution:
+# Template: "The text is: {text_to_translate}"
+# Metadata: {"text_to_translate": "Hello"}
+# Result: "The text is: Hello"
 ```
 
 **Output row structure:**
@@ -426,8 +399,8 @@ elif hasattr(sample_input, "__iter__"):
 ```python
 {
     "prompt": [                               # Always a list of messages
-        {"role": "system", "content": "Answer with just the number."},
-        {"role": "user", "content": "What is 2+2?"},
+        {"role": "system", "content": "You are a math tutor."},
+        {"role": "user", "content": "What is 2+2?\n\nReason step-by-step..."},
     ],
     "answer": "4",                            # String target
     "info": {
@@ -448,9 +421,9 @@ elif hasattr(sample_input, "__iter__"):
 
 ---
 
-### Step 4: Sandbox Setup
+### Step 3: Sandbox Setup
 
-**Entry Point:** `loader.py:67-76`
+**Entry Point:** `loader.py:70-82`
 
 ```python
 effective_sandbox_type = sandbox_type or task_info.sandbox_type
@@ -502,9 +475,9 @@ if scoring_mode == "live" and effective_sandbox_type:
 
 ---
 
-### Step 5: Rubric Creation
+### Step 4: Rubric Creation
 
-**Entry Point:** `loader.py:78-97`
+**Entry Point:** `loader.py:84-100`
 
 ```python
 if scoring_mode == "live":
@@ -610,9 +583,9 @@ async with sandbox_context(sandboxes):
 
 ---
 
-### Step 6: Environment Creation
+### Step 5: Environment Creation
 
-**Entry Point:** `loader.py:99-124`
+**Entry Point:** `loader.py:102-127`
 
 ```python
 # System prompt is already embedded in each sample's "prompt" list,
@@ -660,16 +633,17 @@ from inspect_verifiers_bridge import load_environment
 
 # This call triggers the entire flow above
 env = load_environment(
-    humaneval,                    # Step 1: Introspect task
-    scoring_mode="live",          # Step 5: Use Inspect scorers
-    sandbox_type="local",         # Step 4: Create SandboxManager
-    max_samples=10,               # Step 3: Limit dataset
+    humaneval,                    # Step 1: Introspect task (extract solvers, scorers)
+    scoring_mode="live",          # Step 4: Use Inspect scorers
+    sandbox_type="local",         # Step 3: Create SandboxManager
+    max_samples=10,               # Step 2: Limit dataset
 )
 
 # Result:
 # - env.dataset: HuggingFace Dataset with 10 samples
 # - env.rubric: Verifiers Rubric wrapping humaneval's verify() scorer
 # - Each sample's "prompt" contains [system_message, user_message, ...]
+#   with templates applied (prompt_template, multiple_choice, etc.)
 ```
 
 ---
