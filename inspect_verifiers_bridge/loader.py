@@ -126,24 +126,51 @@ def load_environment(
 
 
 def _extract_system_prompt(task: Task) -> str | None:
-    """Extract system prompt from task solver chain if possible."""
+    """Extract system prompt from task solver chain if possible.
+
+    Looks for both system_message and prompt_template solvers.
+    """
     solver = task.solver
+    system_message = None
+    prompt_template = None
 
     # If it's a Chain, look at the solver functions
     if hasattr(solver, "_solvers"):
         solvers_list = getattr(solver, "_solvers", [])
         for s in solvers_list:
-            # Check if this is a system_message solver by looking at the function name
             func_name = getattr(s, "__qualname__", "")
-            if "system_message" in func_name:
-                # Extract the message from closure variables
-                closure = getattr(s, "__closure__", None)
-                if closure:
-                    for cell in closure:
-                        content = getattr(cell, "cell_contents", None)
-                        # The system message content is stored as a string
-                        if isinstance(content, str) and len(content) > 10:
-                            return content
+            closure = getattr(s, "__closure__", None)
+
+            # Extract system_message
+            if "system_message" in func_name and closure:
+                for cell in closure:
+                    content = getattr(cell, "cell_contents", None)
+                    if isinstance(content, str) and len(content) > 10:
+                        system_message = content
+                        break
+
+            # Extract prompt_template
+            elif "prompt_template" in func_name and closure:
+                for cell in closure:
+                    content = getattr(cell, "cell_contents", None)
+                    # prompt_template template is a string with {prompt} placeholder
+                    if (
+                        isinstance(content, str)
+                        and len(content) > 20
+                        and "{prompt}" in content
+                    ):
+                        # Remove the {prompt} placeholder and use as instructions
+                        prompt_template = content.replace("{prompt}", "").strip()
+                        break
+
+    # Combine system message and prompt template if both exist
+    if system_message and prompt_template:
+        return f"{system_message}\n\n{prompt_template}"
+    elif prompt_template:
+        return prompt_template
+    elif system_message:
+        return system_message
+
     return None
 
 

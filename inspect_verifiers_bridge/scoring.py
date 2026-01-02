@@ -174,14 +174,17 @@ def build_rubric_from_scorers(
         raise ValueError("At least one scorer is required")
 
     # Create reward functions for each scorer
-    reward_funcs = [
-        partial(
+    reward_funcs = []
+    for scorer in scorers:
+        func = partial(
             reward_from_inspect_scorer,
             scorer=scorer,
             sandbox_manager=sandbox_manager,
         )
-        for scorer in scorers
-    ]
+        # Add __name__ attribute to partial function for Verifiers compatibility
+        scorer_name = getattr(scorer, "__name__", scorer.__class__.__name__)
+        func.__name__ = f"inspect_scorer_{scorer_name}"  # type: ignore[attr-defined]
+        reward_funcs.append(func)
 
     return vf.Rubric(funcs=reward_funcs, weights=weights)  # type: ignore[arg-type]
 

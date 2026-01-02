@@ -19,19 +19,25 @@ def sample_to_row(sample: Sample, task_name: str) -> dict[str, Any]:
         task_name: Name of the task (for tracking)
 
     Returns:
-        Dictionary with prompt, answer, info, and id fields
+        Dictionary with question, answer, info, and id fields
     """
-    # Convert input to proper format
-    # Verifiers expects either a string or list of chat messages
-    prompt: str | list[dict[str, Any]]
+    # Convert input to string question format
+    # Verifiers expects a "question" column which it will format with system_prompt
+    question: str
     sample_input = sample.input
     if isinstance(sample_input, str):
-        prompt = sample_input
+        question = sample_input
     elif hasattr(sample_input, "__iter__") and not isinstance(sample_input, str):
-        # Convert ChatMessage objects to dicts
-        prompt = [_chat_message_to_dict(msg) for msg in sample_input]  # type: ignore[arg-type]
+        # For chat messages, extract just the user content
+        # (system messages will be handled via system_prompt parameter)
+        user_messages = [
+            msg.content if hasattr(msg, "content") else msg.text
+            for msg in sample_input  # type: ignore[union-attr]
+            if hasattr(msg, "role") and msg.role == "user"
+        ]
+        question = "\n".join(user_messages) if user_messages else str(sample_input)
     else:
-        prompt = str(sample_input)
+        question = str(sample_input)
 
     # Convert target to string answer when possible
     answer = _target_to_text(sample.target)
@@ -49,7 +55,7 @@ def sample_to_row(sample: Sample, task_name: str) -> dict[str, Any]:
     }
 
     return {
-        "prompt": prompt,
+        "question": question,
         "answer": answer,
         "info": info,
         "id": sample.id,
