@@ -30,7 +30,15 @@ from inspect_ai.scorer import (
     match,
     scorer,
 )
-from inspect_ai.solver import TaskState, generate, prompt_template, system_message
+from inspect_ai.solver import (
+    TaskState,
+    chain_of_thought,
+    generate,
+    multiple_choice as multiple_choice_solver,
+    prompt_template,
+    system_message,
+    user_message,
+)
 from inspect_ai.tool import ToolCall
 from inspect_ai.util import sandbox
 
@@ -124,22 +132,16 @@ def trivia_includes() -> Task:
 # =============================================================================
 # Task 3: Multiple choice
 # =============================================================================
-MC_INPUT_1 = (
-    "What color is the sky on a clear day?\nA) Red\nB) Blue\nC) Green\nD) Yellow"
-)
-MC_INPUT_2 = (
-    "Which is the largest ocean?\nA) Atlantic\nB) Indian\nC) Pacific\nD) Arctic"
-)
-
+# Raw questions without pre-formatted choices - the solver will format them
 MULTIPLE_CHOICE_SAMPLES = [
     Sample(
-        input=MC_INPUT_1,
+        input="What color is the sky on a clear day?",
         target="B",
         choices=["Red", "Blue", "Green", "Yellow"],
         id="mc_1",
     ),
     Sample(
-        input=MC_INPUT_2,
+        input="Which is the largest ocean?",
         target="C",
         choices=["Atlantic", "Indian", "Pacific", "Arctic"],
         id="mc_2",
@@ -149,11 +151,12 @@ MULTIPLE_CHOICE_SAMPLES = [
 
 @task
 def multiple_choice() -> Task:
-    """Multiple choice task."""
+    """Multiple choice task with multiple_choice solver for formatting."""
     return Task(
         dataset=MULTIPLE_CHOICE_SAMPLES,
         solver=[
             system_message("Answer with just the letter (A, B, C, or D)."),
+            multiple_choice_solver(),
             generate(),
         ],
         scorer=match(),
@@ -461,5 +464,71 @@ def mixed_messages() -> Task:
     return Task(
         dataset=MIXED_MESSAGE_SAMPLES,
         solver=[generate()],
+        scorer=includes(),
+    )
+
+
+# =============================================================================
+# Task 10: Chain of thought (similar to prompt_template)
+# =============================================================================
+COT_SAMPLES = [
+    Sample(
+        input="If a train travels 60 miles in 1 hour, how far does it travel in 2.5 hours?",
+        target="150",
+        id="cot_1",
+        metadata={"type": "distance"},
+    ),
+    Sample(
+        input="A store has 48 apples. If 12 are sold, how many remain?",
+        target="36",
+        id="cot_2",
+        metadata={"type": "subtraction"},
+    ),
+]
+
+
+@task
+def with_chain_of_thought() -> Task:
+    """Task using chain_of_thought solver to encourage step-by-step reasoning."""
+    return Task(
+        dataset=COT_SAMPLES,
+        solver=[
+            system_message("You are a helpful math tutor."),
+            chain_of_thought(),
+            generate(),
+        ],
+        scorer=includes(),
+    )
+
+
+# =============================================================================
+# Task 11: User message solver (appends additional user messages)
+# =============================================================================
+USER_MSG_SAMPLES = [
+    Sample(
+        input="Translate this text to French.",
+        target="Bonjour",
+        id="user_msg_1",
+        metadata={"text_to_translate": "Hello", "target_language": "French"},
+    ),
+    Sample(
+        input="Translate this text to Spanish.",
+        target="Hola",
+        id="user_msg_2",
+        metadata={"text_to_translate": "Hello", "target_language": "Spanish"},
+    ),
+]
+
+
+@task
+def with_user_message() -> Task:
+    """Task using user_message solver to append context from metadata."""
+    return Task(
+        dataset=USER_MSG_SAMPLES,
+        solver=[
+            system_message("You are a translator. Respond with only the translation."),
+            user_message("The text to translate is: {text_to_translate}"),
+            generate(),
+        ],
         scorer=includes(),
     )

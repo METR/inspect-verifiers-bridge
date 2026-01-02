@@ -206,11 +206,14 @@ class TestTaskInfoStructure:
         assert task_info.dataset is not None
         assert isinstance(task_info.scorers, list)
         assert isinstance(task_info.solver_has_tools, bool)
-        assert task_info.system_prompt is None or isinstance(task_info.system_prompt, str)
-        assert task_info.prompt_template is None or isinstance(task_info.prompt_template, str)
-        assert (
-            task_info.multiple_choice_template is None
-            or isinstance(task_info.multiple_choice_template, str)
+        assert task_info.system_prompt is None or isinstance(
+            task_info.system_prompt, str
+        )
+        assert task_info.prompt_template is None or isinstance(
+            task_info.prompt_template, str
+        )
+        assert task_info.multiple_choice_template is None or isinstance(
+            task_info.multiple_choice_template, str
         )
         assert isinstance(task_info.user_messages, list)
         assert isinstance(task_info.unknown_solvers, list)

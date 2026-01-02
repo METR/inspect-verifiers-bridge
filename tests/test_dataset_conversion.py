@@ -20,8 +20,10 @@ from .fake_tasks import (
     multiple_choice,
     simple_math,
     simple_math_with_template,
+    with_chain_of_thought,
     with_metadata,
     with_tool_calls,
+    with_user_message,
 )
 
 
@@ -55,7 +57,10 @@ class TestDatasetConversion:
             # Should have system message + user message (raw input, no template)
             assert len(row["prompt"]) == 2
             assert row["prompt"][0]["role"] == "system"
-            assert row["prompt"][0]["content"] == "Answer with just the number, nothing else."
+            assert (
+                row["prompt"][0]["content"]
+                == "Answer with just the number, nothing else."
+            )
             assert row["prompt"][1]["role"] == "user"
             assert row["prompt"][1]["content"] == inspect_sample.input  # Raw input
             assert row["answer"] == inspect_sample.target
@@ -84,7 +89,10 @@ class TestDatasetConversion:
             # Should have system message + user message (formatted via template)
             assert len(row["prompt"]) == 2
             assert row["prompt"][0]["role"] == "system"
-            assert row["prompt"][0]["content"] == "Answer with just the number, nothing else."
+            assert (
+                row["prompt"][0]["content"]
+                == "Answer with just the number, nothing else."
+            )
             assert row["prompt"][1]["role"] == "user"
             # User message should be the FORMATTED input using the template
             expected_user_content = f"Here is the question: {inspect_sample.input}"
@@ -94,13 +102,50 @@ class TestDatasetConversion:
             assert row["info"]["inspect_metadata"] == inspect_sample.metadata
 
     def test_multiple_choice_dataset(self) -> None:
-        """Test multiple choice task preserves choices."""
+        """Test multiple choice task preserves choices and formats prompt correctly."""
+        task_info = load_inspect_task(multiple_choice)
         hf_dataset = get_inspect_dataset(multiple_choice)
 
-        for hf_row in hf_dataset:
+        # Verify task introspection extracted the multiple choice template
+        assert task_info.multiple_choice_template is not None
+        assert "{question}" in task_info.multiple_choice_template
+        assert "{letters}" in task_info.multiple_choice_template
+        assert "{choices}" in task_info.multiple_choice_template
+
+        for hf_row, inspect_sample in zip(hf_dataset, task_info.dataset):
             row = _row(hf_row)
+
+            # Choices should be preserved in info
             assert row["info"]["inspect_choices"] is not None
             assert len(row["info"]["inspect_choices"]) == 4
+
+            # Prompt should be formatted with the multiple choice template
+            assert "prompt" in row
+            assert isinstance(row["prompt"], list)
+            assert len(row["prompt"]) == 2  # system + user
+
+            # System message should be the system_message solver content
+            assert row["prompt"][0]["role"] == "system"
+            assert (
+                row["prompt"][0]["content"]
+                == "Answer with just the letter (A, B, C, or D)."
+            )
+
+            # User message should contain the formatted multiple choice question
+            user_content = row["prompt"][1]["content"]
+            assert row["prompt"][1]["role"] == "user"
+
+            # Should contain the original question
+            assert str(inspect_sample.input) in user_content
+
+            # Should contain the letter options (A, B, C, D)
+            assert "A, B, C, D" in user_content
+
+            # Should contain the formatted choices
+            choices = inspect_sample.choices or []
+            for i, choice in enumerate(choices):
+                letter = chr(ord("A") + i)
+                assert f"{letter}) {choice}" in user_content
 
     def test_chat_input_dataset(self) -> None:
         """Test chat message input format is preserved as prompt list."""
@@ -218,3 +263,64 @@ class TestDatasetConversion:
         # Should have alternating user/assistant messages
         assert isinstance(second_row["prompt"], list)
         assert len(second_row["prompt"]) == 5  # 5 messages total
+
+    def test_chain_of_thought_dataset(self) -> None:
+        """Test chain_of_thought solver formats prompt like prompt_template."""
+        task_info = load_inspect_task(with_chain_of_thought)
+        hf_dataset = get_inspect_dataset(with_chain_of_thought)
+
+        # Verify task introspection - chain_of_thought should be treated as prompt_template
+        assert task_info.system_prompt == "You are a helpful math tutor."
+        assert task_info.prompt_template is not None
+        assert "{prompt}" in task_info.prompt_template
+        assert "step-by-step" in task_info.prompt_template.lower()
+
+        for hf_row, inspect_sample in zip(hf_dataset, task_info.dataset):
+            row = _row(hf_row)
+
+            # Should have system + user messages
+            assert len(row["prompt"]) == 2
+            assert row["prompt"][0]["role"] == "system"
+            assert row["prompt"][0]["content"] == "You are a helpful math tutor."
+
+            # User message should contain original input formatted with CoT template
+            user_content = row["prompt"][1]["content"]
+            assert row["prompt"][1]["role"] == "user"
+            assert str(inspect_sample.input) in user_content
+            assert "step-by-step" in user_content.lower()
+            assert "ANSWER" in user_content
+
+    def test_user_message_dataset(self) -> None:
+        """Test user_message solver appends messages with variable substitution."""
+        task_info = load_inspect_task(with_user_message)
+        hf_dataset = get_inspect_dataset(with_user_message)
+
+        # Verify task introspection
+        assert (
+            task_info.system_prompt
+            == "You are a translator. Respond with only the translation."
+        )
+        assert task_info.prompt_template is None
+        assert len(task_info.user_messages) == 1
+        assert "{text_to_translate}" in task_info.user_messages[0]
+
+        for hf_row, inspect_sample in zip(hf_dataset, task_info.dataset):
+            row = _row(hf_row)
+            metadata = inspect_sample.metadata or {}
+
+            # Should have system + original user + appended user message
+            assert len(row["prompt"]) == 3
+            assert row["prompt"][0]["role"] == "system"
+            assert row["prompt"][1]["role"] == "user"
+            assert row["prompt"][2]["role"] == "user"
+
+            # First user message is the original input
+            assert row["prompt"][1]["content"] == inspect_sample.input
+
+            # Second user message should have variable substituted from metadata
+            appended_content = row["prompt"][2]["content"]
+            text_to_translate = metadata.get("text_to_translate", "")
+            assert text_to_translate in appended_content
+            assert (
+                "{text_to_translate}" not in appended_content
+            )  # Variable should be replaced
