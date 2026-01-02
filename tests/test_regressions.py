@@ -255,7 +255,7 @@ def add(a, b):
 
         async def score_once():
             return await env.rubric.funcs[0](
-                prompt=[{"role": "user", "content": sample["question"]}],
+                prompt=sample["prompt"],
                 completion=[{"role": "assistant", "content": correct_code}],
                 answer=sample["answer"],
                 state={"info": sample["info"]},

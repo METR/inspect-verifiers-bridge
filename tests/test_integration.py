@@ -47,7 +47,13 @@ class TestDatasetConversion:
             zip(hf_dataset, task_info.dataset)
         ):
             assert hf_row["id"] == inspect_sample.id
-            assert hf_row["question"] == inspect_sample.input
+            # Always uses "prompt" column with list of messages
+            assert "prompt" in hf_row
+            assert isinstance(hf_row["prompt"], list)
+            # Should have system message (from task) + user message (the input)
+            user_msgs = [m for m in hf_row["prompt"] if m["role"] == "user"]
+            assert len(user_msgs) == 1
+            assert user_msgs[0]["content"] == inspect_sample.input
             assert hf_row["answer"] == inspect_sample.target
             assert hf_row["info"]["inspect_sample_id"] == inspect_sample.id
             assert hf_row["info"]["inspect_metadata"] == inspect_sample.metadata
@@ -228,7 +234,8 @@ class TestScoringComparison:
         env = load_environment(task_fn, scoring_mode="live", sandbox_type="local")
 
         sample = env.dataset[sample_idx]
-        prompt_messages = [{"role": "user", "content": sample["question"]}]
+        # prompt is now always a list of messages
+        prompt_messages = sample["prompt"]
         completion_messages = [{"role": "assistant", "content": completion}]
         state = {"info": sample["info"]}
 
@@ -335,12 +342,18 @@ class TestEnvironmentCreation:
         assert env.rubric is not None
         assert len(env.rubric.funcs) == 1
 
-    def test_system_prompt_extraction(self):
-        """Test that system prompt is extracted from task."""
+    def test_system_prompt_in_prompts(self):
+        """Test that system prompt is included in each sample's prompt list."""
         env = load_environment(simple_math, scoring_mode="live", sandbox_type="local")
 
-        assert env.system_prompt is not None
-        assert "number" in env.system_prompt.lower()
+        # System prompt should be in the first message of each sample
+        for sample in env.dataset:
+            prompt = sample["prompt"]
+            assert isinstance(prompt, list)
+            assert len(prompt) >= 1
+            # First message should be system with the task's system prompt
+            assert prompt[0]["role"] == "system"
+            assert "number" in prompt[0]["content"].lower()
 
     def test_custom_reward_function(self):
         """Test using a custom reward function."""
@@ -392,7 +405,7 @@ def add(a, b):
         )
 
         sample = env.dataset[0]
-        prompt_messages = [{"role": "user", "content": sample["question"]}]
+        prompt_messages = sample["prompt"]
         completion_messages = [{"role": "assistant", "content": correct_code}]
         state = {"info": sample["info"]}
 
@@ -420,7 +433,7 @@ def add(a, b):
         )
 
         sample = env.dataset[0]
-        prompt_messages = [{"role": "user", "content": sample["question"]}]
+        prompt_messages = sample["prompt"]
         completion_messages = [{"role": "assistant", "content": wrong_code}]
         state = {"info": sample["info"]}
 
@@ -449,7 +462,7 @@ def double(x):
         )
 
         sample = env.dataset[1]  # double function
-        prompt_messages = [{"role": "user", "content": sample["question"]}]
+        prompt_messages = sample["prompt"]
         completion_messages = [{"role": "assistant", "content": correct_code}]
         state = {"info": sample["info"]}
 
@@ -476,7 +489,7 @@ class TestEdgeCases:
             sample = env.dataset[0]
 
             reward = await env.rubric.funcs[0](
-                prompt=[{"role": "user", "content": sample["question"]}],
+                prompt=sample["prompt"],
                 completion=[{"role": "assistant", "content": ""}],
                 answer=sample["answer"],
                 state={"info": sample["info"]},

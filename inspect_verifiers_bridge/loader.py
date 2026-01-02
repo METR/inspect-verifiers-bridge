@@ -53,10 +53,14 @@ def load_environment(
     # Load and introspect the task
     task_info = tasks.load_inspect_task(task, **task_kwargs)
 
-    # Convert dataset
+    # Extract system prompt early (before dataset conversion)
+    effective_system_prompt = system_prompt or _extract_system_prompt(task_info.task)
+
+    # Convert dataset with system prompt included in each sample
     hf_dataset = ds.inspect_dataset_to_hf(
         task_info.dataset,
         task_name=task_info.name,
+        system_prompt=effective_system_prompt,
         max_samples=max_samples,
     )
 
@@ -92,16 +96,13 @@ def load_environment(
     else:
         raise ValueError(f"Unknown scoring_mode: {scoring_mode}")
 
-    # Extract system prompt from task if not provided
-    if system_prompt is None:
-        system_prompt = _extract_system_prompt(task_info.task)
-
     # Create the appropriate environment type
+    # Note: system_prompt is already included in each sample's prompt list,
+    # so we don't pass it separately to the environment
     if env_type == "single_turn":
         return vf.SingleTurnEnv(
             dataset=hf_dataset,
             rubric=rubric,
-            system_prompt=system_prompt,
         )
     elif env_type == "multi_turn":
         # Note: MultiTurnEnv is abstract - for multi-turn we use ToolEnv with no tools
@@ -109,7 +110,6 @@ def load_environment(
         return vf.ToolEnv(
             dataset=hf_dataset,
             rubric=rubric,
-            system_prompt=system_prompt,
             tools=[],
             max_turns=max_turns,
         )
@@ -117,7 +117,6 @@ def load_environment(
         return vf.ToolEnv(
             dataset=hf_dataset,
             rubric=rubric,
-            system_prompt=system_prompt,
             tools=[],  # TODO: Extract tools from task
             max_turns=max_turns,
         )
@@ -177,6 +176,7 @@ def _extract_system_prompt(task: Task) -> str | None:
 def get_inspect_dataset(
     task: Callable[..., Task],
     max_samples: int | None = None,
+    system_prompt: str | None = None,
     **task_kwargs: Any,
 ) -> HFDataset:
     """
@@ -187,14 +187,17 @@ def get_inspect_dataset(
     Args:
         task: A callable that returns an Inspect Task
         max_samples: Limit number of samples
+        system_prompt: Override system prompt (if None, extract from task)
         **task_kwargs: Arguments to pass to the task function
 
     Returns:
         HuggingFace Dataset
     """
     task_info = tasks.load_inspect_task(task, **task_kwargs)
+    effective_system_prompt = system_prompt or _extract_system_prompt(task_info.task)
     return ds.inspect_dataset_to_hf(
         task_info.dataset,
         task_name=task_info.name,
+        system_prompt=effective_system_prompt,
         max_samples=max_samples,
     )

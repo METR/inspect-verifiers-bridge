@@ -10,24 +10,26 @@ from inspect_ai.dataset import Sample
 from inspect_ai.model import ChatMessage
 
 
-def sample_to_row(sample: Sample, task_name: str) -> dict[str, Any]:
+def sample_to_row(
+    sample: Sample,
+    task_name: str,
+    system_prompt: str | None = None,
+) -> dict[str, Any]:
     """
     Convert an Inspect Sample to a Verifiers-compatible dataset row.
 
-    Verifiers supports two input formats:
-    - "question" column (string): Verifiers wraps with system_prompt + user message
-    - "prompt" column (list[ChatMessage]): Used directly as-is
-
-    We use:
-    - String inputs → "question" column (simpler, lets Verifiers handle formatting)
-    - Chat message inputs → "prompt" column (preserves full conversation history)
+    Always uses the "prompt" column with a list of messages. This format:
+    - Preserves full conversation history (multi-turn, tool calls, etc.)
+    - Includes the system prompt in the message list
+    - Works consistently for both string and chat message inputs
 
     Args:
         sample: An Inspect Sample object
         task_name: Name of the task (for tracking)
+        system_prompt: System prompt to prepend (if not already in messages)
 
     Returns:
-        Dictionary with prompt/question, answer, info, and id fields
+        Dictionary with prompt, answer, info, and id fields
     """
     sample_input = sample.input
 
@@ -46,35 +48,36 @@ def sample_to_row(sample: Sample, task_name: str) -> dict[str, Any]:
         "inspect_task_name": task_name,
     }
 
-    # Determine input format
+    # Build prompt as list of messages
+    prompt_messages: list[dict[str, Any]] = []
+
     if isinstance(sample_input, str):
-        # String input: use "question" column, let Verifiers add system_prompt
-        return {
-            "question": sample_input,
-            "answer": answer,
-            "info": info,
-            "id": sample.id,
-        }
+        # String input: convert to system + user messages
+        if system_prompt:
+            prompt_messages.append({"role": "system", "content": system_prompt})
+        prompt_messages.append({"role": "user", "content": sample_input})
     elif hasattr(sample_input, "__iter__") and not isinstance(sample_input, str):
-        # Chat messages: convert to list[dict] and use "prompt" column
-        # This preserves tool calls, assistant messages, multi-turn history
+        # Chat messages: convert to list[dict]
         prompt_messages = [
             _chat_message_to_dict(msg) for msg in sample_input  # type: ignore[union-attr]
         ]
-        return {
-            "prompt": prompt_messages,
-            "answer": answer,
-            "info": info,
-            "id": sample.id,
-        }
+        # Prepend system prompt if not already present and we have one
+        if system_prompt and (
+            not prompt_messages or prompt_messages[0].get("role") != "system"
+        ):
+            prompt_messages.insert(0, {"role": "system", "content": system_prompt})
     else:
-        # Fallback: convert to string
-        return {
-            "question": str(sample_input),
-            "answer": answer,
-            "info": info,
-            "id": sample.id,
-        }
+        # Fallback: convert to string as user message
+        if system_prompt:
+            prompt_messages.append({"role": "system", "content": system_prompt})
+        prompt_messages.append({"role": "user", "content": str(sample_input)})
+
+    return {
+        "prompt": prompt_messages,
+        "answer": answer,
+        "info": info,
+        "id": sample.id,
+    }
 
 
 def _chat_message_to_dict(msg: ChatMessage) -> dict[str, Any]:
@@ -142,6 +145,7 @@ def _target_to_text(target: Any) -> str | None:
 def inspect_dataset_to_hf(
     dataset: InspectDataset,
     task_name: str,
+    system_prompt: str | None = None,
     max_samples: int | None = None,
 ) -> HFDataset:
     """
@@ -150,6 +154,7 @@ def inspect_dataset_to_hf(
     Args:
         dataset: An Inspect Dataset object
         task_name: Name of the task
+        system_prompt: System prompt to include in each sample's prompt list
         max_samples: Optional limit on number of samples to convert
 
     Returns:
@@ -159,6 +164,6 @@ def inspect_dataset_to_hf(
     for i, sample in enumerate(dataset):
         if max_samples is not None and i >= max_samples:
             break
-        rows.append(sample_to_row(sample, task_name))
+        rows.append(sample_to_row(sample, task_name, system_prompt))
 
     return HFDataset.from_list(rows)
