@@ -44,7 +44,7 @@ class TestDatasetConversion:
             zip(hf_dataset, task_info.dataset)
         ):
             assert hf_row["id"] == inspect_sample.id
-            assert hf_row["prompt"] == inspect_sample.input
+            assert hf_row["question"] == inspect_sample.input
             assert hf_row["answer"] == inspect_sample.target
             assert hf_row["info"]["inspect_sample_id"] == inspect_sample.id
             assert hf_row["info"]["inspect_metadata"] == inspect_sample.metadata
@@ -58,17 +58,14 @@ class TestDatasetConversion:
             assert len(row["info"]["inspect_choices"]) == 4
 
     def test_chat_input_dataset(self):
-        """Test chat message input format is preserved."""
+        """Test chat message input format is converted to question string."""
         hf_dataset = get_inspect_dataset(chat_input)
 
         for row in hf_dataset:
-            # Chat input should be converted to list of dicts
-            assert isinstance(row["prompt"], list)
-            assert len(row["prompt"]) >= 1
-            # Check message structure
-            for msg in row["prompt"]:
-                assert "role" in msg
-                assert "content" in msg
+            # Chat input should be converted to string (user messages only)
+            # System messages are handled via system_prompt parameter
+            assert isinstance(row["question"], str)
+            assert len(row["question"]) > 0
 
     def test_metadata_preserved(self):
         """Test that metadata is fully preserved."""
@@ -145,7 +142,7 @@ class TestScoringComparison:
         env = load_environment(task_fn, scoring_mode="live", sandbox_type="local")
 
         sample = env.dataset[sample_idx]
-        prompt_messages = [{"role": "user", "content": sample["prompt"]}]
+        prompt_messages = [{"role": "user", "content": sample["question"]}]
         completion_messages = [{"role": "assistant", "content": completion}]
         state = {"info": sample["info"]}
 
@@ -309,7 +306,7 @@ def add(a, b):
         )
 
         sample = env.dataset[0]
-        prompt_messages = [{"role": "user", "content": sample["prompt"]}]
+        prompt_messages = [{"role": "user", "content": sample["question"]}]
         completion_messages = [{"role": "assistant", "content": correct_code}]
         state = {"info": sample["info"]}
 
@@ -337,7 +334,7 @@ def add(a, b):
         )
 
         sample = env.dataset[0]
-        prompt_messages = [{"role": "user", "content": sample["prompt"]}]
+        prompt_messages = [{"role": "user", "content": sample["question"]}]
         completion_messages = [{"role": "assistant", "content": wrong_code}]
         state = {"info": sample["info"]}
 
@@ -351,6 +348,7 @@ def add(a, b):
         assert reward == 0.0
 
     @pytest.mark.asyncio
+    @pytest.mark.requires_docker
     async def test_docker_sandbox_scoring(self):
         """Test scoring with Docker sandbox."""
         correct_code = """```python
@@ -365,7 +363,7 @@ def double(x):
         )
 
         sample = env.dataset[1]  # double function
-        prompt_messages = [{"role": "user", "content": sample["prompt"]}]
+        prompt_messages = [{"role": "user", "content": sample["question"]}]
         completion_messages = [{"role": "assistant", "content": correct_code}]
         state = {"info": sample["info"]}
 
@@ -392,7 +390,7 @@ class TestEdgeCases:
             sample = env.dataset[0]
 
             reward = await env.rubric.funcs[0](
-                prompt=[{"role": "user", "content": sample["prompt"]}],
+                prompt=[{"role": "user", "content": sample["question"]}],
                 completion=[{"role": "assistant", "content": ""}],
                 answer=sample["answer"],
                 state={"info": sample["info"]},
