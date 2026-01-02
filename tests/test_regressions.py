@@ -5,11 +5,10 @@ These tests ensure that previously fixed bugs don't reoccur.
 """
 
 import asyncio
-from functools import partial
 
 import pytest
-from inspect_ai.scorer import exact, includes, scorer
-from inspect_ai.scorer import Score, Scorer, Target, CORRECT, INCORRECT
+from inspect_ai.scorer import exact, scorer
+from inspect_ai.scorer import Score, Scorer, Target, CORRECT
 from inspect_ai.solver import TaskState
 
 from inspect_verifiers_bridge.scoring import build_rubric_from_scorers

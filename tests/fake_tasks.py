@@ -9,9 +9,16 @@ These tasks cover different features:
 - Multiple choice
 """
 
+import re
+
 from inspect_ai import Task, task
 from inspect_ai.dataset import Sample
-from inspect_ai.model import ChatMessageSystem, ChatMessageUser
+from inspect_ai.model import (
+    ChatMessageAssistant,
+    ChatMessageSystem,
+    ChatMessageTool,
+    ChatMessageUser,
+)
 from inspect_ai.scorer import (
     CORRECT,
     INCORRECT,
@@ -24,6 +31,7 @@ from inspect_ai.scorer import (
     scorer,
 )
 from inspect_ai.solver import TaskState, generate, system_message
+from inspect_ai.tool import ToolCall
 from inspect_ai.util import sandbox
 
 # =============================================================================
@@ -181,8 +189,6 @@ def code_execution_scorer() -> Scorer:
     """Score code by executing it in a sandbox."""
 
     async def score(state: TaskState, target: Target) -> Score:
-        import re
-
         # Extract code from response
         completion = state.output.completion
         code_match = re.search(r"```python\n(.*?)```", completion, re.DOTALL)
@@ -305,15 +311,14 @@ def with_metadata() -> Task:
 # =============================================================================
 # Task 7: Multi-turn conversation with tool calls
 # =============================================================================
-from inspect_ai.model import ChatMessageAssistant, ChatMessageTool
-from inspect_ai.tool import ToolCall, ToolFunction
-
 
 # Sample with assistant message containing tool calls
 TOOL_CALL_SAMPLES = [
     Sample(
         input=[
-            ChatMessageSystem(content="You are a helpful assistant with access to tools."),
+            ChatMessageSystem(
+                content="You are a helpful assistant with access to tools."
+            ),
             ChatMessageUser(content="What's the weather in Paris?"),
             ChatMessageAssistant(
                 content="I'll check the weather for you.",
@@ -382,7 +387,9 @@ ASSISTANT_ONLY_SAMPLES = [
     Sample(
         input=[
             ChatMessageSystem(content="Continue the story."),
-            ChatMessageAssistant(content="Once upon a time, there was a brave knight..."),
+            ChatMessageAssistant(
+                content="Once upon a time, there was a brave knight..."
+            ),
         ],
         target="knight",
         id="assistant_1",
@@ -408,7 +415,9 @@ MIXED_MESSAGE_SAMPLES = [
         input=[
             ChatMessageSystem(content="You are a coding assistant."),
             ChatMessageUser(content="Write a hello world function"),
-            ChatMessageAssistant(content="```python\ndef hello():\n    print('Hello')\n```"),
+            ChatMessageAssistant(
+                content="```python\ndef hello():\n    print('Hello')\n```"
+            ),
             ChatMessageUser(content="Now make it take a name parameter"),
         ],
         target="name",

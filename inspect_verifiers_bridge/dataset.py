@@ -59,7 +59,8 @@ def sample_to_row(
     elif hasattr(sample_input, "__iter__") and not isinstance(sample_input, str):
         # Chat messages: convert to list[dict]
         prompt_messages = [
-            _chat_message_to_dict(msg) for msg in sample_input  # type: ignore[union-attr]
+            _chat_message_to_dict(msg)
+            for msg in sample_input  # type: ignore[union-attr]
         ]
         # Prepend system prompt if not already present and we have one
         if system_prompt and (
@@ -92,16 +93,24 @@ def _chat_message_to_dict(msg: ChatMessage) -> dict[str, Any]:
     """
     result: dict[str, Any] = {"role": msg.role}
 
-    # Get content (prefer .content, fall back to .text)
-    if hasattr(msg, "content") and msg.content is not None:
-        result["content"] = msg.content
-    elif hasattr(msg, "text") and msg.text is not None:
-        result["content"] = msg.text
+    # Get content - all ChatMessage types have content
+    content = msg.content
+    if isinstance(content, str):
+        result["content"] = content
+    elif content:
+        # Content is a list of content parts - extract text
+        text_parts: list[str] = []
+        for part in content:
+            text = getattr(part, "text", None)
+            if text:
+                text_parts.append(str(text))
+        result["content"] = "\n".join(text_parts) if text_parts else ""
     else:
         result["content"] = ""
 
-    # Preserve tool_calls for assistant messages
-    if hasattr(msg, "tool_calls") and msg.tool_calls:
+    # Preserve tool_calls for assistant messages (use getattr for type safety)
+    tool_calls = getattr(msg, "tool_calls", None)
+    if tool_calls:
         result["tool_calls"] = [
             {
                 "id": tc.id,
@@ -113,14 +122,17 @@ def _chat_message_to_dict(msg: ChatMessage) -> dict[str, Any]:
                     else str(tc.arguments),
                 },
             }
-            for tc in msg.tool_calls
+            for tc in tool_calls
         ]
 
-    # Preserve tool response metadata
-    if hasattr(msg, "tool_call_id") and msg.tool_call_id:
-        result["tool_call_id"] = msg.tool_call_id
-    if hasattr(msg, "function") and msg.function:
-        result["name"] = msg.function  # OpenAI format uses "name" for tool responses
+    # Preserve tool response metadata (use getattr for type safety)
+    tool_call_id = getattr(msg, "tool_call_id", None)
+    if tool_call_id:
+        result["tool_call_id"] = tool_call_id
+
+    function_name = getattr(msg, "function", None)
+    if function_name:
+        result["name"] = function_name  # OpenAI format uses "name" for tool responses
 
     return result
 

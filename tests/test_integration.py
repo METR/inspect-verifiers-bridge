@@ -129,9 +129,7 @@ class TestDatasetConversion:
         assert len(assistant_msgs) >= 1
 
         # Check tool_calls are preserved
-        tool_call_msg = next(
-            (m for m in assistant_msgs if "tool_calls" in m), None
-        )
+        tool_call_msg = next((m for m in assistant_msgs if "tool_calls" in m), None)
         assert tool_call_msg is not None
         assert len(tool_call_msg["tool_calls"]) > 0
 
