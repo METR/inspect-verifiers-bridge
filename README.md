@@ -41,7 +41,8 @@ env = load_environment(
 
 # The environment is ready for training
 print(f"Dataset size: {len(env.dataset)}")
-print(f"System prompt: {env.system_prompt[:100]}...")
+# System prompt is embedded in each sample's prompt list
+print(f"First sample prompt: {env.dataset[0]['prompt'][:2]}...")
 ```
 
 ## API Reference
@@ -159,10 +160,12 @@ The bridge converts Inspect `Sample` objects to HuggingFace dataset rows:
 
 | Field | Type | Description |
 |-------|------|-------------|
-| `prompt` | `str \| list[dict]` | Input text or chat messages |
+| `prompt` | `list[dict]` | List of messages (always includes system prompt) |
 | `answer` | `str \| None` | Target answer (converted to string) |
 | `id` | `str \| int` | Sample identifier |
 | `info` | `dict` | All Inspect metadata preserved |
+
+The `prompt` field is always a list of message dicts with `role` and `content` keys. For chat inputs with tool calls, it also preserves `tool_calls` and `tool_call_id`.
 
 The `info` dict contains:
 - `inspect_sample_id`: Original sample ID
@@ -234,26 +237,27 @@ This section provides a detailed walkthrough of what happens when you call `load
                                       │
                                       ▼
 ┌─────────────────────────────────────────────────────────────────────────────┐
-│  2. DATASET CONVERSION                                                      │
-│     inspect_dataset_to_hf(dataset) → HuggingFace Dataset                    │
+│  2. SYSTEM PROMPT EXTRACTION                                                │
+│     _extract_system_prompt(task) → str | None                               │
 └─────────────────────────────────────────────────────────────────────────────┘
                                       │
                                       ▼
 ┌─────────────────────────────────────────────────────────────────────────────┐
-│  3. SANDBOX SETUP (if needed)                                               │
+│  3. DATASET CONVERSION                                                      │
+│     inspect_dataset_to_hf(dataset, system_prompt) → HuggingFace Dataset     │
+│     (system prompt embedded in each sample's "prompt" list)                 │
+└─────────────────────────────────────────────────────────────────────────────┘
+                                      │
+                                      ▼
+┌─────────────────────────────────────────────────────────────────────────────┐
+│  4. SANDBOX SETUP (if needed)                                               │
 │     SandboxManager(config) → manages sandbox lifecycle                      │
 └─────────────────────────────────────────────────────────────────────────────┘
                                       │
                                       ▼
 ┌─────────────────────────────────────────────────────────────────────────────┐
-│  4. RUBRIC CREATION                                                         │
+│  5. RUBRIC CREATION                                                         │
 │     build_rubric_from_scorers(scorers) → Verifiers Rubric                   │
-└─────────────────────────────────────────────────────────────────────────────┘
-                                      │
-                                      ▼
-┌─────────────────────────────────────────────────────────────────────────────┐
-│  5. SYSTEM PROMPT EXTRACTION                                                │
-│     _extract_system_prompt(task) → str | None                               │
 └─────────────────────────────────────────────────────────────────────────────┘
                                       │
                                       ▼
@@ -267,7 +271,7 @@ This section provides a detailed walkthrough of what happens when you call `load
 
 ### Step 1: Task Introspection
 
-**Entry Point:** `loader.py:54`
+**Entry Point:** `loader.py:53-54`
 
 ```python
 task_info = tasks.load_inspect_task(task, **task_kwargs)
@@ -310,14 +314,76 @@ solver_has_tools = _solver_has_tools(task.solver)
 
 ---
 
-### Step 2: Dataset Conversion
+### Step 2: System Prompt Extraction
 
-**Entry Point:** `loader.py:57-61`
+**Entry Point:** `loader.py:56-57`
+
+```python
+effective_system_prompt = system_prompt or _extract_system_prompt(task_info.task)
+```
+
+System prompt extraction happens **before** dataset conversion so it can be embedded in each sample's prompt list.
+
+**Extraction logic:**
+
+```python
+# loader.py:127-173
+def _extract_system_prompt(task: Task) -> str | None:
+    solver = task.solver
+    system_message = None
+    prompt_template = None
+
+    # Check if solver is a Chain with multiple solvers
+    if hasattr(solver, "_solvers"):
+        for s in solver._solvers:
+            func_name = getattr(s, "__qualname__", "")
+            closure = getattr(s, "__closure__", None)
+
+            # Look for system_message solver
+            if "system_message" in func_name and closure:
+                for cell in closure:
+                    content = getattr(cell, "cell_contents", None)
+                    if isinstance(content, str) and len(content) > 10:
+                        system_message = content
+
+            # Look for prompt_template solver
+            elif "prompt_template" in func_name and closure:
+                for cell in closure:
+                    content = getattr(cell, "cell_contents", None)
+                    if isinstance(content, str) and "{prompt}" in content:
+                        # Remove placeholder, keep instructions
+                        prompt_template = content.replace("{prompt}", "").strip()
+
+    # Combine if both exist
+    if system_message and prompt_template:
+        return f"{system_message}\n\n{prompt_template}"
+    return prompt_template or system_message or None
+```
+
+**Example:** For a math task:
+
+```python
+# Inspect task definition:
+solver=[
+    system_message("Answer with just the number."),
+    generate(),
+]
+
+# Extracted system_prompt:
+"Answer with just the number."
+```
+
+---
+
+### Step 3: Dataset Conversion
+
+**Entry Point:** `loader.py:59-64`
 
 ```python
 hf_dataset = ds.inspect_dataset_to_hf(
     task_info.dataset,
     task_name=task_info.name,
+    system_prompt=effective_system_prompt,  # Embedded in each sample
     max_samples=max_samples,
 )
 ```
@@ -325,40 +391,44 @@ hf_dataset = ds.inspect_dataset_to_hf(
 **What happens in `inspect_dataset_to_hf()`:**
 
 ```python
-# dataset.py:106-110 - Iterate over samples
+# dataset.py:145-168 - Iterate over samples
 rows = []
 for i, sample in enumerate(dataset):
     if max_samples is not None and i >= max_samples:
         break
-    rows.append(sample_to_row(sample, task_name))
+    rows.append(sample_to_row(sample, task_name, system_prompt))
 ```
 
 **Sample conversion (`sample_to_row`):**
 
+All samples use the `"prompt"` column with a list of messages. The system prompt is included at the start.
+
 ```python
-# dataset.py:26-38 - Convert input to question string
-sample_input = sample.input
+# dataset.py:51-79 - Build prompt as list of messages
+prompt_messages: list[dict[str, Any]] = []
 
 if isinstance(sample_input, str):
-    question = sample_input
+    # String input: convert to system + user messages
+    if system_prompt:
+        prompt_messages.append({"role": "system", "content": system_prompt})
+    prompt_messages.append({"role": "user", "content": sample_input})
 
 elif hasattr(sample_input, "__iter__"):
-    # Chat messages: extract only user content
-    # System messages → handled via system_prompt parameter
-    # Tool calls, assistant messages → filtered out
-    user_messages = [
-        msg.content
-        for msg in sample_input
-        if hasattr(msg, "role") and msg.role == "user"
-    ]
-    question = "\n".join(user_messages)
+    # Chat messages: convert to list[dict]
+    prompt_messages = [_chat_message_to_dict(msg) for msg in sample_input]
+    # Prepend system prompt if not already present
+    if system_prompt and prompt_messages[0].get("role") != "system":
+        prompt_messages.insert(0, {"role": "system", "content": system_prompt})
 ```
 
 **Output row structure:**
 
 ```python
 {
-    "question": "What is 2+2?",              # User content only
+    "prompt": [                               # Always a list of messages
+        {"role": "system", "content": "Answer with just the number."},
+        {"role": "user", "content": "What is 2+2?"},
+    ],
     "answer": "4",                            # String target
     "info": {
         "inspect_sample_id": "math_1",
@@ -374,13 +444,13 @@ elif hasattr(sample_input, "__iter__"):
 }
 ```
 
-> **Note:** The column is named `"question"` (not `"prompt"`) because Verifiers only injects `system_prompt` when the `"prompt"` column doesn't exist. This ensures the system prompt is properly prepended.
+> **Note:** The `"prompt"` column is always a list of message dicts, ready for use. This preserves full conversation history including tool calls, assistant messages, and multi-turn history.
 
 ---
 
-### Step 3: Sandbox Setup
+### Step 4: Sandbox Setup
 
-**Entry Point:** `loader.py:64-75`
+**Entry Point:** `loader.py:67-76`
 
 ```python
 effective_sandbox_type = sandbox_type or task_info.sandbox_type
@@ -432,9 +502,9 @@ if scoring_mode == "live" and effective_sandbox_type:
 
 ---
 
-### Step 4: Rubric Creation
+### Step 5: Rubric Creation
 
-**Entry Point:** `loader.py:78-93`
+**Entry Point:** `loader.py:78-97`
 
 ```python
 if scoring_mode == "live":
@@ -540,83 +610,23 @@ async with sandbox_context(sandboxes):
 
 ---
 
-### Step 5: System Prompt Extraction
-
-**Entry Point:** `loader.py:96-97`
-
-```python
-if system_prompt is None:
-    system_prompt = _extract_system_prompt(task_info.task)
-```
-
-**Extraction logic:**
-
-```python
-# loader.py:128-174
-def _extract_system_prompt(task: Task) -> str | None:
-    solver = task.solver
-    system_message = None
-    prompt_template = None
-
-    # Check if solver is a Chain with multiple solvers
-    if hasattr(solver, "_solvers"):
-        for s in solver._solvers:
-            func_name = getattr(s, "__qualname__", "")
-            closure = getattr(s, "__closure__", None)
-
-            # Look for system_message solver
-            if "system_message" in func_name and closure:
-                for cell in closure:
-                    content = getattr(cell, "cell_contents", None)
-                    if isinstance(content, str) and len(content) > 10:
-                        system_message = content
-
-            # Look for prompt_template solver
-            elif "prompt_template" in func_name and closure:
-                for cell in closure:
-                    content = getattr(cell, "cell_contents", None)
-                    if isinstance(content, str) and "{prompt}" in content:
-                        # Remove placeholder, keep instructions
-                        prompt_template = content.replace("{prompt}", "").strip()
-
-    # Combine if both exist
-    if system_message and prompt_template:
-        return f"{system_message}\n\n{prompt_template}"
-    return prompt_template or system_message or None
-```
-
-**Example:** For the MATH task:
-
-```python
-# Inspect task definition:
-solver=[
-    prompt_template("Solve this problem:\n{prompt}\n\nAnswer with ANSWER: <answer>"),
-    generate(),
-]
-
-# Extracted system_prompt:
-"Solve this problem:\n\nAnswer with ANSWER: <answer>"
-```
-
----
-
 ### Step 6: Environment Creation
 
-**Entry Point:** `loader.py:100-125`
+**Entry Point:** `loader.py:99-124`
 
 ```python
+# System prompt is already embedded in each sample's "prompt" list,
+# so we don't pass it separately to the environment
 if env_type == "single_turn":
     return vf.SingleTurnEnv(
         dataset=hf_dataset,
         rubric=rubric,
-        system_prompt=system_prompt,
     )
 
 elif env_type == "multi_turn":
     return vf.ToolEnv(
         dataset=hf_dataset,
         rubric=rubric,
-        system_prompt=system_prompt,
         tools=[],
         max_turns=max_turns,
     )
@@ -625,11 +635,12 @@ elif env_type == "tool":
     return vf.ToolEnv(
         dataset=hf_dataset,
         rubric=rubric,
-        system_prompt=system_prompt,
         tools=[],  # TODO: Extract tools from task
         max_turns=max_turns,
     )
 ```
+
+> **Note:** The system prompt is not passed to the environment because it's already included in each sample's `"prompt"` list. Verifiers uses the prompt directly when the `"prompt"` column contains a list of messages.
 
 **Environment type selection:**
 
@@ -650,15 +661,15 @@ from inspect_verifiers_bridge import load_environment
 # This call triggers the entire flow above
 env = load_environment(
     humaneval,                    # Step 1: Introspect task
-    scoring_mode="live",          # Step 4: Use Inspect scorers
-    sandbox_type="local",         # Step 3: Create SandboxManager
-    max_samples=10,               # Step 2: Limit dataset
+    scoring_mode="live",          # Step 5: Use Inspect scorers
+    sandbox_type="local",         # Step 4: Create SandboxManager
+    max_samples=10,               # Step 3: Limit dataset
 )
 
 # Result:
 # - env.dataset: HuggingFace Dataset with 10 samples
 # - env.rubric: Verifiers Rubric wrapping humaneval's verify() scorer
-# - env.system_prompt: "Write Python code..."
+# - Each sample's "prompt" contains [system_message, user_message, ...]
 ```
 
 ---
