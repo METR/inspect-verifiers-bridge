@@ -44,18 +44,23 @@ class InspectTaskInfo:
         default_factory=list
     )  # Additional user messages to append
     unknown_solvers: list[str] = field(default_factory=list)
+    # Ordered list of (transform_type, template) tuples as they appear in solver chain
+    prompt_transformations: list[tuple[str, str]] = field(default_factory=list)
     metadata: dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass
-class _SolverInfo:
-    """Internal class to hold extracted solver information."""
+class SolverInfo:
+    """Class to hold extracted solver information."""
 
     system_prompt: str | None = None
     prompt_template: str | None = None
     multiple_choice_template: str | None = None
     user_messages: list[str] = field(default_factory=list)
     unknown_solvers: list[str] = field(default_factory=list)
+    # Ordered list of (transform_type, template) tuples as they appear in solver chain
+    # transform_type is one of: "prompt_template", "multiple_choice"
+    prompt_transformations: list[tuple[str, str]] = field(default_factory=list)
 
 
 def load_inspect_task(
@@ -119,6 +124,7 @@ def load_inspect_task(
         multiple_choice_template=solver_info.multiple_choice_template,
         user_messages=solver_info.user_messages,
         unknown_solvers=solver_info.unknown_solvers,
+        prompt_transformations=solver_info.prompt_transformations,
         metadata=task.metadata or {},
     )
 
@@ -134,22 +140,32 @@ def _solver_has_tools(solver: Any) -> bool:
     return any(indicator in solver_str.lower() for indicator in tool_indicators)
 
 
-def _get_solver_name(qualname: str) -> str | None:
-    """Extract the solver name from a qualname like 'system_message.<locals>.solve'."""
+def _get_solver_name(qualname: str) -> str:
+    """Extract the solver name from a qualname like 'system_message.<locals>.solve'.
+
+    Args:
+        qualname: The __qualname__ attribute of a solver function
+
+    Returns:
+        The extracted solver name
+
+    Raises:
+        ValueError: If qualname is empty
+    """
+    if not qualname:
+        raise ValueError("Solver qualname cannot be empty")
     # Pattern: "solver_name.<locals>.solve" or just "solver_name"
     if ".<locals>." in qualname:
         return qualname.split(".<locals>.")[0]
-    return qualname if qualname else None
+    return qualname
 
 
-def _is_known_solver(solver_name: str | None) -> bool:
+def _is_known_solver(solver_name: str) -> bool:
     """Check if a solver name matches a known built-in solver."""
-    if not solver_name:
-        return False
     return solver_name in KNOWN_SOLVERS
 
 
-def _extract_solver_info(task: Task) -> _SolverInfo:
+def _extract_solver_info(task: Task) -> SolverInfo:
     """Extract information from task solver chain.
 
     Recognizes built-in Inspect solvers and extracts relevant content:
@@ -163,10 +179,10 @@ def _extract_solver_info(task: Task) -> _SolverInfo:
         task: The Inspect task to introspect
 
     Returns:
-        _SolverInfo with extracted content and list of unknown solvers
+        SolverInfo with extracted content and list of unknown solvers
     """
     solver = task.solver
-    info = _SolverInfo()
+    info = SolverInfo()
 
     # If it's a Chain, look at the solver functions
     if hasattr(solver, "_solvers"):
@@ -174,12 +190,16 @@ def _extract_solver_info(task: Task) -> _SolverInfo:
         for s in solvers_list:
             qualname = getattr(s, "__qualname__", "")
             closure = getattr(s, "__closure__", None)
+
+            # Skip if no qualname (shouldn't happen for valid solvers)
+            if not qualname:
+                continue
+
             solver_name = _get_solver_name(qualname)
 
             # Check if this is a known solver
             if not _is_known_solver(solver_name):
-                if solver_name:
-                    info.unknown_solvers.append(solver_name)
+                info.unknown_solvers.append(solver_name)
                 continue
 
             # Skip solvers that don't need content extraction
@@ -214,12 +234,16 @@ def _extract_solver_info(task: Task) -> _SolverInfo:
                 # prompt_template: look for {prompt} placeholder
                 if solver_name == "prompt_template" and "{prompt}" in content:
                     info.prompt_template = content
+                    # Record transformation in order
+                    info.prompt_transformations.append(("prompt_template", content))
                     break
 
                 # chain_of_thought: also uses {prompt} placeholder
                 if solver_name == "chain_of_thought" and "{prompt}" in content:
                     # chain_of_thought is essentially a prompt_template
                     info.prompt_template = content
+                    # Record transformation in order (as prompt_template type)
+                    info.prompt_transformations.append(("prompt_template", content))
                     break
 
                 # multiple_choice: look for {question} or {letters} placeholders
@@ -227,6 +251,8 @@ def _extract_solver_info(task: Task) -> _SolverInfo:
                     "{question}" in content or "{letters}" in content
                 ):
                     info.multiple_choice_template = content
+                    # Record transformation in order
+                    info.prompt_transformations.append(("multiple_choice", content))
                     break
 
                 # user_message: look for substantial string content (may have placeholders)

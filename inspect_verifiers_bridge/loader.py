@@ -64,6 +64,7 @@ def load_environment(
         prompt_template=task_info.prompt_template,
         multiple_choice_template=task_info.multiple_choice_template,
         user_messages=task_info.user_messages or None,
+        prompt_transformations=task_info.prompt_transformations or None,
         max_samples=max_samples,
     )
 
@@ -156,5 +157,6 @@ def get_inspect_dataset(
         prompt_template=task_info.prompt_template,
         multiple_choice_template=task_info.multiple_choice_template,
         user_messages=task_info.user_messages or None,
+        prompt_transformations=task_info.prompt_transformations or None,
         max_samples=max_samples,
     )

@@ -2,24 +2,38 @@
 Dataset conversion utilities: Inspect Sample -> HuggingFace Dataset.
 """
 
+import logging
 from typing import Any
 
 from datasets import Dataset as HFDataset
 from inspect_ai.dataset import Dataset as InspectDataset
 from inspect_ai.dataset import Sample
-from inspect_ai.model import ChatMessage
+from inspect_ai.model import (
+    ChatMessage,
+    ChatMessageAssistant,
+    ChatMessageTool,
+)
+
+logger = logging.getLogger(__name__)
 
 
 def _substitute_variables(template: str, metadata: dict[str, Any] | None) -> str:
-    """Substitute {variable} placeholders in template from metadata."""
+    """Substitute {variable} placeholders in template from metadata.
+
+    Uses str.format_map with a defaulting dict to only substitute
+    variables that exist in metadata, leaving others unchanged.
+    """
     if not metadata:
         return template
-    result = template
-    for key, value in metadata.items():
-        placeholder = "{" + key + "}"
-        if placeholder in result:
-            result = result.replace(placeholder, str(value))
-    return result
+
+    # Use a custom dict that returns the original placeholder for missing keys
+    class DefaultDict(dict[str, Any]):
+        def __missing__(self, key: str) -> str:
+            return "{" + key + "}"
+
+    # Convert metadata values to strings for safe substitution
+    format_dict = DefaultDict({k: str(v) for k, v in metadata.items()})
+    return template.format_map(format_dict)
 
 
 def _format_multiple_choice(
@@ -62,6 +76,7 @@ def sample_to_row(
     prompt_template: str | None = None,
     multiple_choice_template: str | None = None,
     user_messages: list[str] | None = None,
+    prompt_transformations: list[tuple[str, str]] | None = None,
 ) -> dict[str, Any]:
     """
     Convert an Inspect Sample to a Verifiers-compatible dataset row.
@@ -81,6 +96,9 @@ def sample_to_row(
         prompt_template: Template to format user input (e.g., "Question: {prompt}")
         multiple_choice_template: Template for multiple choice formatting
         user_messages: Additional user messages to append (may have {var} placeholders)
+        prompt_transformations: Ordered list of (transform_type, template) tuples from solver chain.
+            If provided, templates are applied in this order instead of using the individual
+            prompt_template/multiple_choice_template parameters.
 
     Returns:
         Dictionary with prompt, answer, info, and id fields
@@ -112,18 +130,25 @@ def sample_to_row(
         if system_prompt:
             prompt_messages.append({"role": "system", "content": system_prompt})
 
-        # Determine how to format the user content
-        if multiple_choice_template and choices:
-            # Use multiple choice formatting
-            user_content = _format_multiple_choice(
-                multiple_choice_template, sample_input, choices
-            )
-        elif prompt_template:
-            # Apply prompt template
-            user_content = prompt_template.replace("{prompt}", sample_input)
+        # Apply templates in order from solver chain
+        user_content = sample_input
+
+        if prompt_transformations:
+            # Use ordered transformations from solver introspection
+            for transform_type, template in prompt_transformations:
+                if transform_type == "prompt_template":
+                    user_content = template.replace("{prompt}", user_content)
+                elif transform_type == "multiple_choice" and choices:
+                    user_content = _format_multiple_choice(template, user_content, choices)
         else:
-            # Use raw input
-            user_content = sample_input
+            # Fall back to individual templates (legacy behavior)
+            if prompt_template:
+                user_content = prompt_template.replace("{prompt}", user_content)
+
+            if multiple_choice_template and choices:
+                user_content = _format_multiple_choice(
+                    multiple_choice_template, user_content, choices
+                )
 
         prompt_messages.append({"role": "user", "content": user_content})
     elif hasattr(sample_input, "__iter__") and not isinstance(sample_input, str):
@@ -137,24 +162,18 @@ def sample_to_row(
             not prompt_messages or prompt_messages[0].get("role") != "system"
         ):
             prompt_messages.insert(0, {"role": "system", "content": system_prompt})
-        # Note: templates are not applied to chat messages (they have their own structure)
-    else:
-        # Fallback: convert to string as user message
-        if system_prompt:
-            prompt_messages.append({"role": "system", "content": system_prompt})
-        raw_input = str(sample_input)
-
-        # Determine how to format the user content
-        if multiple_choice_template and choices:
-            user_content = _format_multiple_choice(
-                multiple_choice_template, raw_input, choices
+        # Log that templates are not applied to chat messages
+        if prompt_template or multiple_choice_template:
+            logger.info(
+                "Templates are not applied to chat message inputs "
+                "(they have their own structure)"
             )
-        elif prompt_template:
-            user_content = prompt_template.replace("{prompt}", raw_input)
-        else:
-            user_content = raw_input
-
-        prompt_messages.append({"role": "user", "content": user_content})
+    else:
+        # Unexpected input type - this shouldn't happen with valid Inspect samples
+        raise ValueError(
+            f"Unexpected sample input type: {type(sample_input)}. "
+            "Expected str or list of ChatMessage."
+        )
 
     # Append additional user messages (with variable substitution from metadata)
     if user_messages:
@@ -188,6 +207,7 @@ def _chat_message_to_dict(msg: ChatMessage) -> dict[str, Any]:
         result["content"] = content
     elif content:
         # Content is a list of content parts - extract text
+        # Note: Verifiers expects string content, so we concatenate text parts
         text_parts: list[str] = []
         for part in content:
             text = getattr(part, "text", None)
@@ -197,31 +217,30 @@ def _chat_message_to_dict(msg: ChatMessage) -> dict[str, Any]:
     else:
         result["content"] = ""
 
-    # Preserve tool_calls for assistant messages (use getattr for type safety)
-    tool_calls = getattr(msg, "tool_calls", None)
-    if tool_calls:
-        result["tool_calls"] = [
-            {
-                "id": tc.id,
-                "type": getattr(tc, "type", "function"),
-                "function": {
-                    "name": tc.function,
-                    "arguments": tc.arguments
-                    if isinstance(tc.arguments, str)
-                    else str(tc.arguments),
-                },
-            }
-            for tc in tool_calls
-        ]
-
-    # Preserve tool response metadata (use getattr for type safety)
-    tool_call_id = getattr(msg, "tool_call_id", None)
-    if tool_call_id:
-        result["tool_call_id"] = tool_call_id
-
-    function_name = getattr(msg, "function", None)
-    if function_name:
-        result["name"] = function_name  # OpenAI format uses "name" for tool responses
+    # Handle type-specific attributes using isinstance checks
+    if isinstance(msg, ChatMessageAssistant):
+        # Preserve tool_calls for assistant messages
+        if msg.tool_calls:
+            result["tool_calls"] = [
+                {
+                    "id": tc.id,
+                    "type": getattr(tc, "type", "function"),
+                    "function": {
+                        "name": tc.function,
+                        "arguments": tc.arguments
+                        if isinstance(tc.arguments, str)
+                        else str(tc.arguments),
+                    },
+                }
+                for tc in msg.tool_calls
+            ]
+    elif isinstance(msg, ChatMessageTool):
+        # Preserve tool response metadata
+        if msg.tool_call_id:
+            result["tool_call_id"] = msg.tool_call_id
+        if msg.function:
+            result["name"] = msg.function  # OpenAI format uses "name" for tool responses
+    # ChatMessageUser and ChatMessageSystem only have role and content (already handled)
 
     return result
 
@@ -250,6 +269,7 @@ def inspect_dataset_to_hf(
     prompt_template: str | None = None,
     multiple_choice_template: str | None = None,
     user_messages: list[str] | None = None,
+    prompt_transformations: list[tuple[str, str]] | None = None,
     max_samples: int | None = None,
 ) -> HFDataset:
     """
@@ -262,6 +282,7 @@ def inspect_dataset_to_hf(
         prompt_template: Template to format user input (e.g., "Question: {prompt}")
         multiple_choice_template: Template for multiple choice formatting
         user_messages: Additional user messages to append (may have {var} placeholders)
+        prompt_transformations: Ordered list of (transform_type, template) tuples from solver chain
         max_samples: Optional limit on number of samples to convert
 
     Returns:
@@ -279,6 +300,7 @@ def inspect_dataset_to_hf(
                 prompt_template,
                 multiple_choice_template,
                 user_messages,
+                prompt_transformations,
             )
         )
 

@@ -2,8 +2,8 @@
 Pytest configuration and fixtures.
 """
 
-from typing import TYPE_CHECKING
 import shutil
+from typing import TYPE_CHECKING
 
 import pytest
 

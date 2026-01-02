@@ -262,6 +262,167 @@ def _row(item: Any) -> dict[str, Any]:
     return dict(item)  # type: ignore[arg-type]
 
 
+class TestTransformationOrdering:
+    """
+    Regression tests for template transformation ordering.
+
+    Bug: Template transformations (prompt_template, multiple_choice) were applied
+    in a hardcoded order regardless of the actual order in the solver chain.
+
+    Fix: Use prompt_transformations list from solver introspection to apply
+    templates in the correct order as defined in the task's solver chain.
+    """
+
+    def test_prompt_template_then_multiple_choice(self) -> None:
+        """Test ordering: prompt_template applied before multiple_choice."""
+        from inspect_ai.dataset import Sample
+
+        from inspect_verifiers_bridge.dataset import sample_to_row
+
+        sample = Sample(
+            input="What is 2+2?",
+            target="B",
+            choices=["3", "4", "5"],
+        )
+
+        # Order: prompt_template first, then multiple_choice
+        transformations: list[tuple[str, str]] = [
+            ("prompt_template", "QUESTION: {prompt}"),
+            ("multiple_choice", "{question}\n\nChoices:\n{choices}\n\nAnswer with {letters}"),
+        ]
+
+        row = sample_to_row(
+            sample,
+            task_name="test",
+            prompt_transformations=transformations,
+        )
+
+        user_content = row["prompt"][0]["content"]
+        # prompt_template wraps original: "QUESTION: What is 2+2?"
+        # multiple_choice then formats that as the question
+        assert "QUESTION: What is 2+2?" in user_content
+        assert "A) 3" in user_content
+        assert "B) 4" in user_content
+
+    def test_multiple_choice_then_prompt_template(self) -> None:
+        """Test ordering: multiple_choice applied before prompt_template."""
+        from inspect_ai.dataset import Sample
+
+        from inspect_verifiers_bridge.dataset import sample_to_row
+
+        sample = Sample(
+            input="What is 2+2?",
+            target="B",
+            choices=["3", "4", "5"],
+        )
+
+        # Order: multiple_choice first, then prompt_template
+        transformations: list[tuple[str, str]] = [
+            ("multiple_choice", "{question}\n\nChoices:\n{choices}\n\nAnswer with {letters}"),
+            ("prompt_template", "SOLVE THIS:\n{prompt}"),
+        ]
+
+        row = sample_to_row(
+            sample,
+            task_name="test",
+            prompt_transformations=transformations,
+        )
+
+        user_content = row["prompt"][0]["content"]
+        # multiple_choice formats the question with choices first
+        # prompt_template then wraps the entire thing
+        assert user_content.startswith("SOLVE THIS:")
+        assert "What is 2+2?" in user_content
+        assert "A) 3" in user_content
+
+    def test_different_orders_produce_different_results(self) -> None:
+        """Test that different transformation orders produce different outputs."""
+        from inspect_ai.dataset import Sample
+
+        from inspect_verifiers_bridge.dataset import sample_to_row
+
+        sample = Sample(
+            input="Question",
+            target="A",
+            choices=["Yes", "No"],
+        )
+
+        # Use templates that clearly demonstrate order dependence
+        # prompt_template adds text AFTER the prompt
+        # multiple_choice adds choices AFTER the question
+        order_a: list[tuple[str, str]] = [
+            ("prompt_template", "{prompt} [THINK STEP BY STEP]"),
+            ("multiple_choice", "{question}\n{choices}"),
+        ]
+
+        order_b: list[tuple[str, str]] = [
+            ("multiple_choice", "{question}\n{choices}"),
+            ("prompt_template", "{prompt} [THINK STEP BY STEP]"),
+        ]
+
+        row_a = sample_to_row(sample, task_name="test", prompt_transformations=order_a)
+        row_b = sample_to_row(sample, task_name="test", prompt_transformations=order_b)
+
+        content_a = row_a["prompt"][0]["content"]
+        content_b = row_b["prompt"][0]["content"]
+
+        # Order A: prompt_template first -> "Question [THINK STEP BY STEP]"
+        #          then multiple_choice -> "Question [THINK STEP BY STEP]\nA) Yes\nB) No"
+        # Order B: multiple_choice first -> "Question\nA) Yes\nB) No"
+        #          then prompt_template -> "Question\nA) Yes\nB) No [THINK STEP BY STEP]"
+        assert content_a != content_b
+
+        # In order A, [THINK STEP BY STEP] appears BEFORE choices
+        assert "[THINK STEP BY STEP]\nA)" in content_a
+        # In order B, [THINK STEP BY STEP] appears AFTER choices (at the very end)
+        assert content_b.endswith("[THINK STEP BY STEP]")
+
+    def test_prompt_transformations_from_task_introspection(self) -> None:
+        """Test that prompt_transformations from task introspection are used."""
+        from inspect_ai import Task
+        from inspect_ai.dataset import Sample
+        from inspect_ai.scorer import exact
+        from inspect_ai.solver import chain_of_thought, generate
+
+        from inspect_verifiers_bridge.tasks import load_inspect_task
+
+        def task_with_cot() -> Task:
+            return Task(
+                dataset=[Sample(input="test", target="answer")],
+                solver=[chain_of_thought(), generate()],
+                scorer=exact(),
+            )
+
+        task_info = load_inspect_task(task_with_cot)
+
+        # chain_of_thought should be recorded as a prompt_template transformation
+        assert len(task_info.prompt_transformations) > 0
+        transform_types = [t[0] for t in task_info.prompt_transformations]
+        assert "prompt_template" in transform_types
+
+    def test_legacy_fallback_when_no_transformations(self) -> None:
+        """Test that individual templates work when prompt_transformations is None."""
+        from inspect_ai.dataset import Sample
+
+        from inspect_verifiers_bridge.dataset import sample_to_row
+
+        sample = Sample(
+            input="What is 2+2?",
+            target="4",
+        )
+
+        # No prompt_transformations, use legacy parameters
+        row = sample_to_row(
+            sample,
+            task_name="test",
+            prompt_template="Q: {prompt}",
+            prompt_transformations=None,
+        )
+
+        user_content = row["prompt"][0]["content"]
+        assert user_content == "Q: What is 2+2?"
+
+
 class TestSandboxScoringConcurrent:
     """
     Test that sandbox-based scoring works with concurrent rollouts.
