@@ -45,6 +45,7 @@ class InspectTaskInfo:
     )  # Additional user messages to append
     unknown_solvers: list[str] = field(default_factory=list)
     # Ordered list of (transform_type, template) tuples as they appear in solver chain
+    # transform_type is one of: "prompt_template", "multiple_choice", "user_message"
     prompt_transformations: list[tuple[str, str]] = field(default_factory=list)
     metadata: dict[str, Any] = field(default_factory=dict)
 
@@ -59,7 +60,7 @@ class SolverInfo:
     user_messages: list[str] = field(default_factory=list)
     unknown_solvers: list[str] = field(default_factory=list)
     # Ordered list of (transform_type, template) tuples as they appear in solver chain
-    # transform_type is one of: "prompt_template", "multiple_choice"
+    # transform_type is one of: "prompt_template", "multiple_choice", "user_message"
     prompt_transformations: list[tuple[str, str]] = field(default_factory=list)
 
 
@@ -258,6 +259,8 @@ def _extract_solver_info(task: Task) -> SolverInfo:
                 # user_message: look for substantial string content (may have placeholders)
                 if solver_name == "user_message" and len(content) > 5:
                     info.user_messages.append(content)
+                    # Record transformation in order
+                    info.prompt_transformations.append(("user_message", content))
                     break
 
     return info

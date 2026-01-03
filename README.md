@@ -1,4 +1,4 @@
-# inspect-bridge
+# inspect-verifiers-bridge
 
 A bridge to convert [Inspect AI](https://inspect.aisi.org.uk/) tasks into [Verifiers](https://verifiers.readthedocs.io/) environments for RL training with [prime-rl](https://github.com/PrimeIntellect-ai/prime-rl).
 

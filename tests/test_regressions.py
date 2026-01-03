@@ -422,6 +422,72 @@ class TestTransformationOrdering:
         user_content = row["prompt"][0]["content"]
         assert user_content == "Q: What is 2+2?"
 
+    def test_user_message_in_transformations(self) -> None:
+        """Test that user_message is handled as part of prompt_transformations."""
+        from inspect_ai.dataset import Sample
+
+        from inspect_verifiers_bridge.dataset import sample_to_row
+
+        sample = Sample(
+            input="Solve this problem",
+            target="42",
+            metadata={"hint": "Think carefully"},
+        )
+
+        # user_message appears in the transformation order
+        transformations: list[tuple[str, str]] = [
+            ("prompt_template", "{prompt}\n\nShow your work."),
+            ("user_message", "Hint: {hint}"),
+        ]
+
+        row = sample_to_row(
+            sample,
+            task_name="test",
+            prompt_transformations=transformations,
+        )
+
+        # Should have 2 user messages
+        user_messages = [m for m in row["prompt"] if m["role"] == "user"]
+        assert len(user_messages) == 2
+
+        # First user message has the transformed prompt
+        assert "Solve this problem" in user_messages[0]["content"]
+        assert "Show your work." in user_messages[0]["content"]
+
+        # Second user message is from user_message with variable substitution
+        assert user_messages[1]["content"] == "Hint: Think carefully"
+
+    def test_user_message_ordering_preserved(self) -> None:
+        """Test that multiple user_messages maintain their order."""
+        from inspect_ai.dataset import Sample
+
+        from inspect_verifiers_bridge.dataset import sample_to_row
+
+        sample = Sample(
+            input="Question",
+            target="Answer",
+        )
+
+        transformations: list[tuple[str, str]] = [
+            ("user_message", "First additional message"),
+            ("user_message", "Second additional message"),
+            ("user_message", "Third additional message"),
+        ]
+
+        row = sample_to_row(
+            sample,
+            task_name="test",
+            prompt_transformations=transformations,
+        )
+
+        user_messages = [m for m in row["prompt"] if m["role"] == "user"]
+        assert len(user_messages) == 4  # Original + 3 additional
+
+        assert user_messages[0]["content"] == "Question"
+        assert user_messages[1]["content"] == "First additional message"
+        assert user_messages[2]["content"] == "Second additional message"
+        assert user_messages[3]["content"] == "Third additional message"
+
 
 class TestSandboxScoringConcurrent:
     """

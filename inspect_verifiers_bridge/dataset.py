@@ -132,6 +132,7 @@ def sample_to_row(
 
         # Apply templates in order from solver chain
         user_content = sample_input
+        additional_user_messages: list[str] = []
 
         if prompt_transformations:
             # Use ordered transformations from solver introspection
@@ -140,6 +141,10 @@ def sample_to_row(
                     user_content = template.replace("{prompt}", user_content)
                 elif transform_type == "multiple_choice" and choices:
                     user_content = _format_multiple_choice(template, user_content, choices)
+                elif transform_type == "user_message":
+                    # Collect user_messages in order for appending after main content
+                    msg_content = _substitute_variables(template, metadata)
+                    additional_user_messages.append(msg_content)
         else:
             # Fall back to individual templates (legacy behavior)
             if prompt_template:
@@ -151,6 +156,10 @@ def sample_to_row(
                 )
 
         prompt_messages.append({"role": "user", "content": user_content})
+
+        # Append user_messages collected from prompt_transformations
+        for msg_content in additional_user_messages:
+            prompt_messages.append({"role": "user", "content": msg_content})
     elif hasattr(sample_input, "__iter__") and not isinstance(sample_input, str):
         # Chat messages: convert to list[dict]
         prompt_messages = [
@@ -175,8 +184,9 @@ def sample_to_row(
             "Expected str or list of ChatMessage."
         )
 
-    # Append additional user messages (with variable substitution from metadata)
-    if user_messages:
+    # Append additional user messages (legacy fallback when not using prompt_transformations)
+    # When prompt_transformations is provided, user_messages are handled in the transformation loop
+    if user_messages and not prompt_transformations:
         for msg_template in user_messages:
             msg_content = _substitute_variables(msg_template, metadata)
             prompt_messages.append({"role": "user", "content": msg_content})
