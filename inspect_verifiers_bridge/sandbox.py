@@ -14,7 +14,9 @@ from inspect_ai.util import ExecResult
 from inspect_ai.util._sandbox.context import (
     cleanup_sandbox_environments_sample,
     init_sandbox_environments_sample,
+    sandbox_default_context_var,
     sandbox_environments_context_var,
+    sandbox_with_environments_context_var,
 )
 from inspect_ai.util._sandbox.environment import SandboxEnvironment
 from inspect_ai.util._sandbox.registry import registry_find_sandboxenv
@@ -138,6 +140,10 @@ async def sandbox_context(
     Context manager that sets up the sandbox context for Inspect scorers.
 
     This makes sandbox() calls work within the context.
+    Sets all three required ContextVars that Inspect expects:
+    - sandbox_environments_context_var: The actual sandbox environments
+    - sandbox_default_context_var: Name of the default sandbox
+    - sandbox_with_environments_context_var: Cache for sandbox_with lookups
 
     Args:
         sandboxes: Dictionary of sandbox environments to make available
@@ -145,11 +151,19 @@ async def sandbox_context(
     Yields:
         The sandboxes dict
     """
-    token = sandbox_environments_context_var.set(sandboxes)
+    # Determine default sandbox name (first key in dict)
+    default_name = next(iter(sandboxes.keys())) if sandboxes else "default"
+
+    # Set all three ContextVars that Inspect expects
+    token_envs = sandbox_environments_context_var.set(sandboxes)
+    token_default = sandbox_default_context_var.set(default_name)
+    token_with = sandbox_with_environments_context_var.set({})
     try:
         yield sandboxes
     finally:
-        sandbox_environments_context_var.reset(token)
+        sandbox_environments_context_var.reset(token_envs)
+        sandbox_default_context_var.reset(token_default)
+        sandbox_with_environments_context_var.reset(token_with)
 
 
 @dataclass

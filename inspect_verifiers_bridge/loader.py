@@ -6,7 +6,7 @@ from typing import Any, Callable, Literal
 
 import verifiers as vf
 from datasets import Dataset as HFDataset
-from inspect_ai import Task
+from inspect_ai import Task  # Still needed for type hints
 
 from inspect_verifiers_bridge import dataset as ds
 from inspect_verifiers_bridge import scoring, tasks
@@ -53,10 +53,18 @@ def load_environment(
     # Load and introspect the task
     task_info = tasks.load_inspect_task(task, **task_kwargs)
 
-    # Convert dataset
+    # Use provided system prompt or the one extracted during task introspection
+    effective_system_prompt = system_prompt or task_info.system_prompt
+
+    # Convert dataset with solver-extracted prompt modifications
     hf_dataset = ds.inspect_dataset_to_hf(
         task_info.dataset,
         task_name=task_info.name,
+        system_prompt=effective_system_prompt,
+        prompt_template=task_info.prompt_template,
+        multiple_choice_template=task_info.multiple_choice_template,
+        user_messages=task_info.user_messages or None,
+        prompt_transformations=task_info.prompt_transformations or None,
         max_samples=max_samples,
     )
 
@@ -92,16 +100,13 @@ def load_environment(
     else:
         raise ValueError(f"Unknown scoring_mode: {scoring_mode}")
 
-    # Extract system prompt from task if not provided
-    if system_prompt is None:
-        system_prompt = _extract_system_prompt(task_info.task)
-
     # Create the appropriate environment type
+    # Note: system_prompt is already included in each sample's prompt list,
+    # so we don't pass it separately to the environment
     if env_type == "single_turn":
         return vf.SingleTurnEnv(
             dataset=hf_dataset,
             rubric=rubric,
-            system_prompt=system_prompt,
         )
     elif env_type == "multi_turn":
         # Note: MultiTurnEnv is abstract - for multi-turn we use ToolEnv with no tools
@@ -109,7 +114,6 @@ def load_environment(
         return vf.ToolEnv(
             dataset=hf_dataset,
             rubric=rubric,
-            system_prompt=system_prompt,
             tools=[],
             max_turns=max_turns,
         )
@@ -117,7 +121,6 @@ def load_environment(
         return vf.ToolEnv(
             dataset=hf_dataset,
             rubric=rubric,
-            system_prompt=system_prompt,
             tools=[],  # TODO: Extract tools from task
             max_turns=max_turns,
         )
@@ -125,31 +128,10 @@ def load_environment(
         raise ValueError(f"Unknown env_type: {env_type}")
 
 
-def _extract_system_prompt(task: Task) -> str | None:
-    """Extract system prompt from task solver chain if possible."""
-    solver = task.solver
-
-    # If it's a Chain, look at the solver functions
-    if hasattr(solver, "_solvers"):
-        solvers_list = getattr(solver, "_solvers", [])
-        for s in solvers_list:
-            # Check if this is a system_message solver by looking at the function name
-            func_name = getattr(s, "__qualname__", "")
-            if "system_message" in func_name:
-                # Extract the message from closure variables
-                closure = getattr(s, "__closure__", None)
-                if closure:
-                    for cell in closure:
-                        content = getattr(cell, "cell_contents", None)
-                        # The system message content is stored as a string
-                        if isinstance(content, str) and len(content) > 10:
-                            return content
-    return None
-
-
 def get_inspect_dataset(
     task: Callable[..., Task],
     max_samples: int | None = None,
+    system_prompt: str | None = None,
     **task_kwargs: Any,
 ) -> HFDataset:
     """
@@ -160,14 +142,21 @@ def get_inspect_dataset(
     Args:
         task: A callable that returns an Inspect Task
         max_samples: Limit number of samples
+        system_prompt: Override system prompt (if None, extract from task)
         **task_kwargs: Arguments to pass to the task function
 
     Returns:
         HuggingFace Dataset
     """
     task_info = tasks.load_inspect_task(task, **task_kwargs)
+    effective_system_prompt = system_prompt or task_info.system_prompt
     return ds.inspect_dataset_to_hf(
         task_info.dataset,
         task_name=task_info.name,
+        system_prompt=effective_system_prompt,
+        prompt_template=task_info.prompt_template,
+        multiple_choice_template=task_info.multiple_choice_template,
+        user_messages=task_info.user_messages or None,
+        prompt_transformations=task_info.prompt_transformations or None,
         max_samples=max_samples,
     )

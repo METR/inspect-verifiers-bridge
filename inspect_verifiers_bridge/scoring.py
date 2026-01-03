@@ -6,12 +6,14 @@ Verifiers reward function framework.
 """
 
 import asyncio
+import warnings
 from functools import partial
 from typing import Any
 
 import verifiers as vf
 from inspect_ai.model import (
     ChatMessageAssistant,
+    ChatMessageSystem,
     ChatMessageUser,
     ModelOutput,
 )
@@ -52,8 +54,20 @@ async def reward_from_inspect_scorer(
     """
     info = state.get("info", {})
 
+    # Assert expected keys are present in info
+    assert "inspect_target_raw" in info, "info must contain 'inspect_target_raw'"
+    assert "inspect_sample_id" in info, "info must contain 'inspect_sample_id'"
+    assert "inspect_metadata" in info, "info must contain 'inspect_metadata'"
+
     # Get the raw target from info, or fall back to answer
     target_raw = info.get("inspect_target_raw", answer)
+    if target_raw is None:
+        warnings.warn(
+            "Target is None - scoring may not work correctly. "
+            "Ensure the sample has a valid target.",
+            UserWarning,
+            stacklevel=2,
+        )
     target = Target(target_raw) if target_raw is not None else Target("")
 
     # Build messages list for TaskState
@@ -66,6 +80,8 @@ async def reward_from_inspect_scorer(
     original_input = _extract_original_input(prompt)
 
     # Build TaskState - use a generic model name
+    assert "inspect_sample_id" in info, "info must contain 'inspect_sample_id'"
+    assert "inspect_metadata" in info, "info must contain 'inspect_metadata'"
     task_state = TaskState(
         model=MODEL_NAME,  # type: ignore[arg-type]
         sample_id=info.get("inspect_sample_id", 0),
@@ -80,6 +96,7 @@ async def reward_from_inspect_scorer(
     # If we have a sandbox manager, set up sandbox context
     score: Score | None
     if sandbox_manager is not None:
+        assert "inspect_sample_id" in info, "info must contain 'inspect_sample_id'"
         sample_id = info.get("inspect_sample_id", 0)
         sandboxes = await sandbox_manager.get_sandbox(sample_id, info)
         async with sandbox_context(sandboxes):
@@ -89,6 +106,11 @@ async def reward_from_inspect_scorer(
         score = await scorer(task_state, target)
 
     if score is None:
+        warnings.warn(
+            "Scorer returned None - returning 0.0 as default reward.",
+            UserWarning,
+            stacklevel=2,
+        )
         return 0.0
     return _score_to_float(score)
 
@@ -98,8 +120,6 @@ def _build_inspect_messages(
     completion: list[dict[str, Any]],
 ) -> list[Any]:
     """Convert Verifiers messages to Inspect ChatMessage objects."""
-    from inspect_ai.model import ChatMessageSystem
-
     messages: list[Any] = []
 
     for msg in prompt:
@@ -174,14 +194,25 @@ def build_rubric_from_scorers(
         raise ValueError("At least one scorer is required")
 
     # Create reward functions for each scorer
-    reward_funcs = [
-        partial(
+    reward_funcs = []
+    for i, scorer in enumerate(scorers):
+        func = partial(
             reward_from_inspect_scorer,
             scorer=scorer,
             sandbox_manager=sandbox_manager,
         )
-        for scorer in scorers
-    ]
+        # Add __name__ attribute to partial function for Verifiers compatibility
+        # Use __qualname__ to get unique names (e.g., "expression_exact_match.<locals>.score")
+        # Extract the parent function name from qualname, or fall back to __name__ or class name
+        qualname = getattr(scorer, "__qualname__", "")
+        if ".<locals>." in qualname:
+            # Extract parent function name: "expression_exact_match.<locals>.score" -> "expression_exact_match"
+            scorer_name = qualname.split(".<locals>.")[0]
+        else:
+            scorer_name = getattr(scorer, "__name__", scorer.__class__.__name__)
+        # Add index suffix to guarantee uniqueness if there are duplicate names
+        func.__name__ = f"inspect_{scorer_name}_{i}"  # type: ignore[attr-defined]
+        reward_funcs.append(func)
 
     return vf.Rubric(funcs=reward_funcs, weights=weights)  # type: ignore[arg-type]
 
