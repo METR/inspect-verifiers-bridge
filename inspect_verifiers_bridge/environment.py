@@ -84,35 +84,32 @@ class InspectSandboxEnv(vf.StatefulToolEnv):
 
         # Add bash tool if requested
         if include_bash:
-            self.add_tool(self._bash, args_to_skip=["state"])
+            self.add_tool(self.bash, args_to_skip=["sandbox"])
 
         # Add submit tool for multi-turn (auto-enable if max_turns > 1)
         if include_submit or (include_submit is None and max_turns > 1):
-            self.add_tool(self._submit, args_to_skip=["state"])
+            self.add_tool(self.submit, args_to_skip=["state"])
 
     # === Tools ===
-    # Note: state is typed as str but actually receives dict from update_tool_args.
-    # This is because args_to_skip removes it from schema, but pydantic still validates
-    # the signature. Using dict[str, Any] fails strict JSON schema validation.
+    # Note: sandbox and state parameters use Any type because pydantic schema
+    # generation runs before args_to_skip removes them. At runtime, they receive
+    # the actual SandboxEnvironment and State dict via update_tool_args.
 
-    async def _bash(self, command: str, state: str = "") -> str:  # type: ignore[assignment]
+    async def bash(self, command: str, sandbox: Any = None) -> str:
         """Execute a bash command in the sandbox."""
-        state_dict: dict[str, Any] = state  # type: ignore[assignment]
-        sandbox_envs = state_dict.get("_sandbox_envs")
-        if not sandbox_envs:
+        if sandbox is None:
             return "Error: No sandbox available"
-        sandbox = next(iter(sandbox_envs.values()))
         result = await sandbox.exec(cmd=["bash", "-c", command], timeout=30)
         output = result.stdout
         if result.stderr:
             output = f"{output}\nstderr: {result.stderr}"
         return output or "(no output)"
 
-    async def _submit(self, answer: str, state: str = "") -> str:  # type: ignore[assignment]
-        """Submit your final answer to complete the task."""
-        state_dict: dict[str, Any] = state  # type: ignore[assignment]
-        state_dict["_submitted_answer"] = answer
-        return f"Answer submitted: {answer}"
+    async def submit(self, state: Any = None) -> str:
+        """Submit to complete the task. Call this when you are done."""
+        if state is not None:
+            state["_submitted_answer"] = True
+        return "Task submitted. Rollout complete."
 
     # === StatefulToolEnv overrides ===
 
@@ -124,8 +121,12 @@ class InspectSandboxEnv(vf.StatefulToolEnv):
         state: vf.State,
         **kwargs: Any,
     ) -> dict[str, Any]:
-        """Inject state into tool calls."""
-        if tool_name in ("_bash", "_submit"):
+        """Inject sandbox/state into tool calls."""
+        if tool_name == "bash":
+            sandbox_envs = state.get("_sandbox_envs", {})
+            sandbox = next(iter(sandbox_envs.values()), None)
+            return {**tool_args, "sandbox": sandbox}
+        if tool_name == "submit":
             return {**tool_args, "state": state}
         return tool_args
 
@@ -140,7 +141,7 @@ class InspectSandboxEnv(vf.StatefulToolEnv):
 
         Handles two special cases:
         1. Model responds without tools (multi-turn mode) - return empty list
-        2. Model calls _submit - set final_env_response to prevent extra model call
+        2. Model calls submit - set final_env_response to prevent extra model call
         """
         assert isinstance(messages, list)
         last_message = messages[-1]
@@ -152,7 +153,7 @@ class InspectSandboxEnv(vf.StatefulToolEnv):
         # Call parent to execute tools
         response = await super().env_response(messages, state, **kwargs)
 
-        # If _submit was called, mark this as final response to prevent wasted model call
+        # If submit was called, mark this as final response to prevent wasted model call
         # See: https://docs.primeintellect.ai/verifiers/source/environments#final-environment-responses
         if "_submitted_answer" in state:
             state["final_env_response"] = response
@@ -175,7 +176,7 @@ class InspectSandboxEnv(vf.StatefulToolEnv):
         the model doesn't call tools.
 
         In multi-turn mode (max_turns>1), we disable this stop condition so the
-        model must either call _submit or reach max_turns to end the rollout.
+        model must either call submit or reach max_turns to end the rollout.
         """
         if self.max_turns > 1:
             # Multi-turn: don't stop just because no tools were called

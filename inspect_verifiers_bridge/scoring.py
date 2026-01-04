@@ -182,18 +182,42 @@ def _build_inspect_messages(
 
 
 def _build_model_output(completion: list[dict[str, Any]]) -> ModelOutput:
-    """Build ModelOutput from the last assistant message in completion."""
-    # Find the last assistant message
-    last_assistant_content = ""
+    """Build ModelOutput from the last assistant message, skipping submit tool calls."""
     for msg in reversed(completion):
         if msg["role"] == "assistant":
-            last_assistant_content = msg["content"]
-            break
-
-    return ModelOutput.from_content(
-        model="bridge-model",
-        content=last_assistant_content,
+            # Skip submit tool calls - the real answer is in an earlier message
+            if _is_submit_tool_call(msg):
+                continue
+            return ModelOutput.from_content(
+                model=str(BRIDGE_MODEL_NAME),
+                content=msg.get("content", ""),
+            )
+    # No non-submit assistant messages found - warn and return empty
+    warnings.warn(
+        "No assistant message found (excluding submit tool calls). "
+        "Scoring may not work correctly.",
+        UserWarning,
+        stacklevel=2,
     )
+    return ModelOutput.from_content(model=str(BRIDGE_MODEL_NAME), content="")
+
+
+def _is_submit_tool_call(msg: dict[str, Any]) -> bool:
+    """Check if an assistant message is a submit tool call."""
+    tool_calls = msg.get("tool_calls")
+    if not tool_calls:
+        return False
+    # Check if any tool call is to submit
+    for tc in tool_calls:
+        if isinstance(tc, str):
+            # JSON string format
+            if '"name": "submit"' in tc or '"name":"submit"' in tc:
+                return True
+        elif isinstance(tc, dict):
+            func = tc.get("function", {})
+            if func.get("name") == "submit":
+                return True
+    return False
 
 
 def _score_to_float(score: Score) -> float:

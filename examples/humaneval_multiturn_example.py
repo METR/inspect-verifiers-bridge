@@ -3,11 +3,11 @@ HumanEval Multi-Turn (Multi Turn, With Tools)
 
 Demonstrates multi-turn agentic interaction with bash and submit tools.
 Model can use the bash tool across multiple turns to test code iteratively,
-then call submit when ready with the final answer.
+then call submit when ready to complete the task.
 
 Available tools:
-- _bash(command): Execute bash commands in the sandbox
-- _submit(answer): Submit final answer and end the rollout
+- bash(command): Execute bash commands in the sandbox
+- submit(): Signal completion and end the rollout
 
 Run with:
     vf-eval humaneval_multiturn_example -p examples/ -m gpt-4o-mini -n 5
