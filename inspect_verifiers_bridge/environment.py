@@ -3,12 +3,17 @@ Custom environment that integrates Inspect sandboxes with Verifiers lifecycle.
 
 Creates a fresh sandbox per rollout, destroyed after scoring completes.
 Supports configurable tools (bash, submit) for interactive tasks.
+
+IMPORTANT: Scoring happens AFTER cleanup in verifiers' lifecycle. We use
+post_rollout() to run Inspect scorers and cache results BEFORE the sandbox
+is destroyed, following verifiers' recommended pattern.
 """
 
 from typing import Any, Callable
 
 import verifiers as vf
 from datasets import Dataset as HFDataset
+from inspect_ai.scorer import Scorer
 
 from inspect_verifiers_bridge.sandbox import (
     SandboxConfig,
@@ -31,6 +36,10 @@ class InspectSandboxEnv(vf.StatefulToolEnv):
 
     The sandbox is made available to scorers via state["_sandbox_envs"]
     which is picked up by reward_from_inspect_scorer.
+
+    IMPORTANT: Verifiers calls cleanup BEFORE scoring. We use post_rollout()
+    to run Inspect scorers and cache results in state["_cached_scores"] before
+    the sandbox is destroyed. The rubric reward functions then return cached values.
     """
 
     def __init__(
@@ -39,6 +48,7 @@ class InspectSandboxEnv(vf.StatefulToolEnv):
         rubric: vf.Rubric,
         sandbox_config: SandboxConfig,
         task_name: str,
+        scorers: list[Scorer] | None = None,
         max_turns: int = 1,
         tools: list[Callable[..., Any]] | None = None,
         include_bash: bool = True,
@@ -53,6 +63,7 @@ class InspectSandboxEnv(vf.StatefulToolEnv):
             rubric: Verifiers rubric for scoring
             sandbox_config: Configuration for sandbox creation
             task_name: Name of the Inspect task
+            scorers: List of Inspect scorers (used for pre-cleanup scoring)
             max_turns: Maximum conversation turns (1 for single-turn)
             tools: Optional list of additional tool functions
             include_bash: Whether to include bash tool (default: True)
@@ -68,6 +79,7 @@ class InspectSandboxEnv(vf.StatefulToolEnv):
         )
         self.sandbox_config = sandbox_config
         self.task_name = task_name
+        self.scorers = scorers or []
         self._active_instances: dict[int, SandboxInstance] = {}
 
         # Add bash tool if requested
@@ -146,9 +158,59 @@ class InspectSandboxEnv(vf.StatefulToolEnv):
 
         return await super().setup_state(state)
 
+    async def post_rollout(self, state: vf.State) -> None:
+        """
+        Run Inspect scorers and cache results BEFORE sandbox is destroyed.
+
+        Verifiers calls cleanup before scoring, so we must compute scores here
+        while the sandbox is still alive. Results are cached in state["_cached_scores"]
+        and the rubric reward functions will return these cached values.
+        """
+        if not self.scorers:
+            return
+
+        # Import here to avoid circular dependency
+        from inspect_verifiers_bridge.scoring import (
+            _get_scorer_name,
+            reward_from_inspect_scorer,
+        )
+
+        sandbox_envs = state.get("_sandbox_envs")
+        if sandbox_envs is None:
+            return
+
+        # Prepare arguments for the reward function
+        prompt = state.get("prompt", [])
+        completion = state.get("completion", [])
+        answer = state.get("answer")
+
+        # Cache scores for each scorer
+        cached_scores: dict[str, float] = {}
+        for i, scorer in enumerate(self.scorers):
+            scorer_name = _get_scorer_name(scorer)
+            cache_key = f"inspect_{scorer_name}_{i}"
+            try:
+                score = await reward_from_inspect_scorer(
+                    prompt=prompt,
+                    completion=completion,
+                    answer=answer,
+                    state=state,
+                    scorer=scorer,
+                )
+                cached_scores[cache_key] = score
+            except Exception as e:
+                # Log error but continue with other scorers
+                self.logger.error(f"Error in post_rollout scoring for {cache_key}: {e}")
+                cached_scores[cache_key] = 0.0
+
+        state["_cached_scores"] = cached_scores
+
     @vf.cleanup
     async def destroy_sandbox(self, state: vf.State) -> None:
-        """Clean up sandbox after rollout (including scoring)."""
+        """Clean up sandbox after rollout. Runs post_rollout first to cache scores."""
+        # Run scoring before destroying sandbox
+        await self.post_rollout(state)
+
         instance: SandboxInstance | None = state.get("_sandbox_instance")
         if instance is None:
             return

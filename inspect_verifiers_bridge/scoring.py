@@ -33,6 +33,7 @@ async def reward_from_inspect_scorer(
     state: dict[str, Any],
     *,
     scorer: Scorer,
+    cache_key: str | None = None,
 ) -> float:
     """
     Verifiers reward function that wraps an Inspect scorer.
@@ -43,16 +44,27 @@ async def reward_from_inspect_scorer(
     Sandbox context is obtained from state["_sandbox_envs"] if present
     (set by InspectSandboxEnv.setup_state).
 
+    If cache_key is provided and state["_cached_scores"] contains that key,
+    returns the cached value instead of re-computing. This is used by
+    InspectSandboxEnv which pre-computes scores in post_rollout() before
+    the sandbox is destroyed.
+
     Args:
         prompt: The prompt messages (from Verifiers)
         completion: The completion messages (from Verifiers)
         answer: The expected answer (from Verifiers dataset)
         state: The Verifiers state dict containing info and optional sandbox
         scorer: The Inspect scorer to use
+        cache_key: Optional key to look up in state["_cached_scores"]
 
     Returns:
         Float reward value (typically 0.0-1.0)
     """
+    # Check for cached score first (set by InspectSandboxEnv.post_rollout)
+    if cache_key is not None:
+        cached_scores = state.get("_cached_scores", {})
+        if cache_key in cached_scores:
+            return cached_scores[cache_key]
     info = state.get("info", {})
 
     # Assert expected keys are present in info and have valid values
@@ -227,10 +239,12 @@ def build_rubric_from_scorers(
     # Create reward functions for each scorer
     reward_funcs: list[Callable[..., Any]] = []
     for i, scorer in enumerate(scorers):
-        func = partial(reward_from_inspect_scorer, scorer=scorer)
         scorer_name = _get_scorer_name(scorer)
+        # Cache key must match what InspectSandboxEnv.post_rollout uses
+        cache_key = f"inspect_{scorer_name}_{i}"
+        func = partial(reward_from_inspect_scorer, scorer=scorer, cache_key=cache_key)
         # Add index suffix to guarantee uniqueness if there are duplicate names
-        func.__name__ = f"inspect_{scorer_name}_{i}"  # type: ignore[attr-defined]
+        func.__name__ = cache_key  # type: ignore[attr-defined]
         reward_funcs.append(func)
 
     return vf.Rubric(funcs=reward_funcs, weights=weights)  # type: ignore[arg-type]

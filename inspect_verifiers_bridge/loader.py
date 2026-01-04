@@ -96,6 +96,7 @@ def load_environment(
                     config=sandbox_config,
                 ),
                 task_name=task_info.name,
+                scorers=task_info.scorers if scoring_mode == "live" else None,
                 max_turns=1,
                 include_bash=include_bash,
                 include_submit=False,  # No submit for single turn
@@ -118,6 +119,7 @@ def load_environment(
                 config=sandbox_config,
             ),
             task_name=task_info.name,
+            scorers=task_info.scorers if scoring_mode == "live" else None,
             max_turns=max_turns,
             include_bash=include_bash,
             include_submit=include_submit if include_submit is not None else True,
