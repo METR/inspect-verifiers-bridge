@@ -54,10 +54,15 @@ async def reward_from_inspect_scorer(
     """
     info = state.get("info", {})
 
-    # Assert expected keys are present in info
+    # Assert expected keys are present in info and have valid values
     assert "inspect_target_raw" in info, "info must contain 'inspect_target_raw'"
     assert "inspect_sample_id" in info, "info must contain 'inspect_sample_id'"
     assert "inspect_metadata" in info, "info must contain 'inspect_metadata'"
+    assert "inspect_input_raw" in info, "info must contain 'inspect_input_raw'"
+
+    # Validate sample_id is not None (can happen if Sample.id was None)
+    sample_id = info["inspect_sample_id"]
+    assert sample_id is not None, "sample_id cannot be None - ensure Sample.id is set"
 
     # Get the raw target from info, or fall back to answer
     target_raw = info.get("inspect_target_raw", answer)
@@ -76,28 +81,29 @@ async def reward_from_inspect_scorer(
     # Build model output from the last assistant message
     model_output = _build_model_output(completion)
 
-    # Reconstruct original input
-    original_input = _extract_original_input(prompt)
+    # Get original input from info (pre-solver, matches native Inspect semantics)
+    # Convert back to ChatMessage list if it was stored as list of dicts
+    input_raw = info["inspect_input_raw"]
+    if isinstance(input_raw, str):
+        original_input: str | list[Any] = input_raw
+    else:
+        original_input = _build_inspect_messages(input_raw, [])
 
     # Build TaskState
-    assert "inspect_sample_id" in info, "info must contain 'inspect_sample_id'"
-    assert "inspect_metadata" in info, "info must contain 'inspect_metadata'"
     task_state = TaskState(
         model=BRIDGE_MODEL_NAME,
-        sample_id=info.get("inspect_sample_id", 0),
+        sample_id=sample_id,
         epoch=0,
         input=original_input,
         messages=messages,
         target=target,
         output=model_output,
-        metadata=info.get("inspect_metadata", {}),
+        metadata=info["inspect_metadata"],
     )
 
     # If we have a sandbox manager, set up sandbox context
     score: Score | None
     if sandbox_manager is not None:
-        assert "inspect_sample_id" in info, "info must contain 'inspect_sample_id'"
-        sample_id = info.get("inspect_sample_id", 0)
         sandboxes = await sandbox_manager.get_sandbox(sample_id, info)
         async with sandbox_context(sandboxes):
             score = await scorer(task_state, target)
@@ -175,16 +181,6 @@ def _build_model_output(completion: list[dict[str, Any]]) -> ModelOutput:
         model="bridge-model",
         content=last_assistant_content,
     )
-
-
-def _extract_original_input(prompt: list[dict[str, Any]]) -> str | list[Any]:
-    """Extract the original input from prompt messages."""
-    # For single-turn, just get the user message content
-    user_messages = [m for m in prompt if m.get("role") == "user"]
-    if len(user_messages) == 1:
-        return user_messages[0].get("content", "")
-    # For multi-turn, return the full message list
-    return _build_inspect_messages(prompt, [])
 
 
 def _score_to_float(score: Score) -> float:

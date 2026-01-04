@@ -10,6 +10,7 @@ from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 from typing import Any, AsyncIterator
 
+from inspect_ai._eval.task.sandbox import read_sandboxenv_file, resolve_sample_files
 from inspect_ai.util import ExecResult
 from inspect_ai.util._sandbox.context import (
     cleanup_sandbox_environments_sample,
@@ -77,6 +78,14 @@ async def create_sandbox_for_sample(
     Returns:
         SandboxInstance containing environments and metadata for cleanup
     """
+    # Check for per-sample sandbox configuration (not yet supported)
+    per_sample_sandbox = sample_info.get("inspect_sandbox")
+    if per_sample_sandbox is not None:
+        raise NotImplementedError(
+            f"Per-sample sandbox configuration is not yet supported. "
+            f"Sample has sandbox={per_sample_sandbox}, but only task-level sandbox config is used."
+        )
+
     # Initialize Docker context if using Docker sandbox
     if sandbox_config.sandbox_type == "docker":
         _ensure_docker_context()
@@ -84,20 +93,18 @@ async def create_sandbox_for_sample(
     # Get the sandbox environment class
     sandbox_cls = registry_find_sandboxenv(sandbox_config.sandbox_type)
 
-    # Extract files from sample info
+    # Resolve files using Inspect's resolution (handles data URIs, HTTP URLs, file paths)
     files_raw = sample_info.get("inspect_files") or {}
+    resolved_files = resolve_sample_files(files_raw)
     files_bytes: dict[str, bytes] = {}
-    for name, content in files_raw.items():
-        if isinstance(content, bytes):
-            files_bytes[name] = content
-        elif isinstance(content, str):
-            files_bytes[name] = content.encode("utf-8")
+    for path, contents in resolved_files.items():
+        files_bytes[path] = await read_sandboxenv_file(contents)
 
-    # Extract setup script
+    # Resolve setup script using Inspect's resolution
     setup = sample_info.get("inspect_setup")
     setup_bytes: bytes | None = None
     if setup:
-        setup_bytes = setup.encode("utf-8") if isinstance(setup, str) else setup
+        setup_bytes = await read_sandboxenv_file(setup)
 
     # Get metadata
     metadata_raw = sample_info.get("inspect_metadata") or {}

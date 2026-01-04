@@ -47,9 +47,17 @@ async def sample_to_row(
     # Convert target to string answer
     answer = _target_to_text(sample.target)
 
+    # Store original input (pre-solver) for TaskState.input in scoring
+    # Convert ChatMessage list to dicts for serialization
+    if isinstance(sample.input, str):
+        input_raw: str | list[dict[str, Any]] = sample.input
+    else:
+        input_raw = [_chat_message_to_dict(msg) for msg in sample.input]
+
     # Store all Inspect-specific data in info for later use
     info: dict[str, Any] = {
         "inspect_sample_id": sample.id,
+        "inspect_input_raw": input_raw,
         "inspect_target_raw": sample.target,
         "inspect_choices": sample.choices,
         "inspect_metadata": sample.metadata or {},
