@@ -16,7 +16,116 @@ from inspect_ai.util._sandbox.environment import (
 )
 from inspect_ai.util._subprocess import ExecResult
 
-from inspect_verifiers_bridge.scoring import build_rubric_from_scorers
+from inspect_verifiers_bridge.scoring import (
+    _build_inspect_messages,
+    build_rubric_from_scorers,
+)
+
+
+class TestToolMessageRoundTrip:
+    """
+    Regression tests for tool message function name preservation.
+
+    Bug: Tool responses lost their function name during scoring reconstruction
+    because dataset stored under "name" (OpenAI format) but scoring code
+    might read from wrong key.
+
+    Fix: Both dataset.py and scoring.py consistently use "name" key.
+    """
+
+    def test_tool_message_preserves_function_name(self) -> None:
+        """Test that tool message function name round-trips correctly."""
+        # Simulate a tool message as stored in dataset (OpenAI format)
+        tool_msg = {
+            "role": "tool",
+            "content": "Result: 42",
+            "tool_call_id": "call_123",
+            "name": "calculator",  # OpenAI format uses "name"
+        }
+
+        # Convert through _build_inspect_messages (scoring.py)
+        messages = _build_inspect_messages([tool_msg], [])
+
+        assert len(messages) == 1
+        from inspect_ai.model import ChatMessageTool
+
+        assert isinstance(messages[0], ChatMessageTool)
+        assert messages[0].function == "calculator"
+        assert messages[0].tool_call_id == "call_123"
+        assert messages[0].content == "Result: 42"
+
+    def test_assistant_tool_calls_preserve_structure(self) -> None:
+        """Test that assistant tool calls round-trip correctly."""
+        # Simulate an assistant message with tool calls as stored in dataset
+        # Note: OpenAI format stores arguments as JSON string
+        assistant_msg = {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [
+                {
+                    "id": "call_123",
+                    "type": "function",
+                    "function": {
+                        "name": "calculator",
+                        "arguments": '{"x": 1, "y": 2}',
+                    },
+                }
+            ],
+        }
+
+        messages = _build_inspect_messages([assistant_msg], [])
+
+        assert len(messages) == 1
+        from inspect_ai.model import ChatMessageAssistant
+
+        assert isinstance(messages[0], ChatMessageAssistant)
+        assert messages[0].tool_calls is not None
+        assert len(messages[0].tool_calls) == 1
+        tc = messages[0].tool_calls[0]
+        assert tc.id == "call_123"
+        assert tc.function == "calculator"
+        # ToolCall stores arguments as dict, not string
+        assert tc.arguments == {"x": 1, "y": 2}
+
+    def test_full_tool_conversation_round_trip(self) -> None:
+        """Test that a full tool conversation round-trips correctly."""
+        # Simulate a conversation with tool use
+        prompt = [
+            {"role": "system", "content": "You are a calculator."},
+            {"role": "user", "content": "What is 1 + 2?"},
+        ]
+        completion = [
+            {
+                "role": "assistant",
+                "content": "",
+                "tool_calls": [
+                    {
+                        "id": "call_abc",
+                        "type": "function",
+                        "function": {"name": "add", "arguments": '{"a": 1, "b": 2}'},
+                    }
+                ],
+            },
+            {
+                "role": "tool",
+                "content": "3",
+                "tool_call_id": "call_abc",
+                "name": "add",
+            },
+            {"role": "assistant", "content": "The answer is 3."},
+        ]
+
+        messages = _build_inspect_messages(prompt, completion)
+
+        assert len(messages) == 5
+
+        # Check tool response
+        tool_msg = messages[3]
+        from inspect_ai.model import ChatMessageTool
+
+        assert isinstance(tool_msg, ChatMessageTool)
+        assert tool_msg.function == "add"
+        assert tool_msg.tool_call_id == "call_abc"
 
 
 class TestScorerNaming:
@@ -260,233 +369,6 @@ class TestSandboxContext:
 def _row(item: Any) -> dict[str, Any]:
     """Convert HuggingFace dataset item to dict for type safety."""
     return dict(item)  # type: ignore[arg-type]
-
-
-class TestTransformationOrdering:
-    """
-    Regression tests for template transformation ordering.
-
-    Bug: Template transformations (prompt_template, multiple_choice) were applied
-    in a hardcoded order regardless of the actual order in the solver chain.
-
-    Fix: Use prompt_transformations list from solver introspection to apply
-    templates in the correct order as defined in the task's solver chain.
-    """
-
-    def test_prompt_template_then_multiple_choice(self) -> None:
-        """Test ordering: prompt_template applied before multiple_choice."""
-        from inspect_ai.dataset import Sample
-
-        from inspect_verifiers_bridge.dataset import sample_to_row
-
-        sample = Sample(
-            input="What is 2+2?",
-            target="B",
-            choices=["3", "4", "5"],
-        )
-
-        # Order: prompt_template first, then multiple_choice
-        transformations: list[tuple[str, str]] = [
-            ("prompt_template", "QUESTION: {prompt}"),
-            ("multiple_choice", "{question}\n\nChoices:\n{choices}\n\nAnswer with {letters}"),
-        ]
-
-        row = sample_to_row(
-            sample,
-            task_name="test",
-            prompt_transformations=transformations,
-        )
-
-        user_content = row["prompt"][0]["content"]
-        # prompt_template wraps original: "QUESTION: What is 2+2?"
-        # multiple_choice then formats that as the question
-        assert "QUESTION: What is 2+2?" in user_content
-        assert "A) 3" in user_content
-        assert "B) 4" in user_content
-
-    def test_multiple_choice_then_prompt_template(self) -> None:
-        """Test ordering: multiple_choice applied before prompt_template."""
-        from inspect_ai.dataset import Sample
-
-        from inspect_verifiers_bridge.dataset import sample_to_row
-
-        sample = Sample(
-            input="What is 2+2?",
-            target="B",
-            choices=["3", "4", "5"],
-        )
-
-        # Order: multiple_choice first, then prompt_template
-        transformations: list[tuple[str, str]] = [
-            ("multiple_choice", "{question}\n\nChoices:\n{choices}\n\nAnswer with {letters}"),
-            ("prompt_template", "SOLVE THIS:\n{prompt}"),
-        ]
-
-        row = sample_to_row(
-            sample,
-            task_name="test",
-            prompt_transformations=transformations,
-        )
-
-        user_content = row["prompt"][0]["content"]
-        # multiple_choice formats the question with choices first
-        # prompt_template then wraps the entire thing
-        assert user_content.startswith("SOLVE THIS:")
-        assert "What is 2+2?" in user_content
-        assert "A) 3" in user_content
-
-    def test_different_orders_produce_different_results(self) -> None:
-        """Test that different transformation orders produce different outputs."""
-        from inspect_ai.dataset import Sample
-
-        from inspect_verifiers_bridge.dataset import sample_to_row
-
-        sample = Sample(
-            input="Question",
-            target="A",
-            choices=["Yes", "No"],
-        )
-
-        # Use templates that clearly demonstrate order dependence
-        # prompt_template adds text AFTER the prompt
-        # multiple_choice adds choices AFTER the question
-        order_a: list[tuple[str, str]] = [
-            ("prompt_template", "{prompt} [THINK STEP BY STEP]"),
-            ("multiple_choice", "{question}\n{choices}"),
-        ]
-
-        order_b: list[tuple[str, str]] = [
-            ("multiple_choice", "{question}\n{choices}"),
-            ("prompt_template", "{prompt} [THINK STEP BY STEP]"),
-        ]
-
-        row_a = sample_to_row(sample, task_name="test", prompt_transformations=order_a)
-        row_b = sample_to_row(sample, task_name="test", prompt_transformations=order_b)
-
-        content_a = row_a["prompt"][0]["content"]
-        content_b = row_b["prompt"][0]["content"]
-
-        # Order A: prompt_template first -> "Question [THINK STEP BY STEP]"
-        #          then multiple_choice -> "Question [THINK STEP BY STEP]\nA) Yes\nB) No"
-        # Order B: multiple_choice first -> "Question\nA) Yes\nB) No"
-        #          then prompt_template -> "Question\nA) Yes\nB) No [THINK STEP BY STEP]"
-        assert content_a != content_b
-
-        # In order A, [THINK STEP BY STEP] appears BEFORE choices
-        assert "[THINK STEP BY STEP]\nA)" in content_a
-        # In order B, [THINK STEP BY STEP] appears AFTER choices (at the very end)
-        assert content_b.endswith("[THINK STEP BY STEP]")
-
-    def test_prompt_transformations_from_task_introspection(self) -> None:
-        """Test that prompt_transformations from task introspection are used."""
-        from inspect_ai import Task
-        from inspect_ai.dataset import Sample
-        from inspect_ai.scorer import exact
-        from inspect_ai.solver import chain_of_thought, generate
-
-        from inspect_verifiers_bridge.tasks import load_inspect_task
-
-        def task_with_cot() -> Task:
-            return Task(
-                dataset=[Sample(input="test", target="answer")],
-                solver=[chain_of_thought(), generate()],
-                scorer=exact(),
-            )
-
-        task_info = load_inspect_task(task_with_cot)
-
-        # chain_of_thought should be recorded as a prompt_template transformation
-        assert len(task_info.prompt_transformations) > 0
-        transform_types = [t[0] for t in task_info.prompt_transformations]
-        assert "prompt_template" in transform_types
-
-    def test_legacy_fallback_when_no_transformations(self) -> None:
-        """Test that individual templates work when prompt_transformations is None."""
-        from inspect_ai.dataset import Sample
-
-        from inspect_verifiers_bridge.dataset import sample_to_row
-
-        sample = Sample(
-            input="What is 2+2?",
-            target="4",
-        )
-
-        # No prompt_transformations, use legacy parameters
-        row = sample_to_row(
-            sample,
-            task_name="test",
-            prompt_template="Q: {prompt}",
-            prompt_transformations=None,
-        )
-
-        user_content = row["prompt"][0]["content"]
-        assert user_content == "Q: What is 2+2?"
-
-    def test_user_message_in_transformations(self) -> None:
-        """Test that user_message is handled as part of prompt_transformations."""
-        from inspect_ai.dataset import Sample
-
-        from inspect_verifiers_bridge.dataset import sample_to_row
-
-        sample = Sample(
-            input="Solve this problem",
-            target="42",
-            metadata={"hint": "Think carefully"},
-        )
-
-        # user_message appears in the transformation order
-        transformations: list[tuple[str, str]] = [
-            ("prompt_template", "{prompt}\n\nShow your work."),
-            ("user_message", "Hint: {hint}"),
-        ]
-
-        row = sample_to_row(
-            sample,
-            task_name="test",
-            prompt_transformations=transformations,
-        )
-
-        # Should have 2 user messages
-        user_messages = [m for m in row["prompt"] if m["role"] == "user"]
-        assert len(user_messages) == 2
-
-        # First user message has the transformed prompt
-        assert "Solve this problem" in user_messages[0]["content"]
-        assert "Show your work." in user_messages[0]["content"]
-
-        # Second user message is from user_message with variable substitution
-        assert user_messages[1]["content"] == "Hint: Think carefully"
-
-    def test_user_message_ordering_preserved(self) -> None:
-        """Test that multiple user_messages maintain their order."""
-        from inspect_ai.dataset import Sample
-
-        from inspect_verifiers_bridge.dataset import sample_to_row
-
-        sample = Sample(
-            input="Question",
-            target="Answer",
-        )
-
-        transformations: list[tuple[str, str]] = [
-            ("user_message", "First additional message"),
-            ("user_message", "Second additional message"),
-            ("user_message", "Third additional message"),
-        ]
-
-        row = sample_to_row(
-            sample,
-            task_name="test",
-            prompt_transformations=transformations,
-        )
-
-        user_messages = [m for m in row["prompt"] if m["role"] == "user"]
-        assert len(user_messages) == 4  # Original + 3 additional
-
-        assert user_messages[0]["content"] == "Question"
-        assert user_messages[1]["content"] == "First additional message"
-        assert user_messages[2]["content"] == "Second additional message"
-        assert user_messages[3]["content"] == "Third additional message"
 
 
 class TestSandboxScoringConcurrent:

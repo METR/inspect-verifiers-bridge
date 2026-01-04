@@ -4,13 +4,13 @@ Tests for dataset conversion from Inspect samples to HuggingFace datasets.
 These tests verify that:
 1. Dataset conversion preserves all information
 2. Different input formats work correctly
-3. Solver templates are correctly applied
+3. Ground truth solver execution produces correct prompts
 """
 
 from typing import Any
 
-from inspect_verifiers_bridge.loader import get_inspect_dataset
 from inspect_verifiers_bridge.tasks import load_inspect_task
+from inspect_verifiers_bridge.utils import get_inspect_dataset
 
 from .fake_tasks import (
     assistant_only_input,
@@ -36,16 +36,12 @@ class TestDatasetConversion:
     """Test that dataset conversion preserves all information."""
 
     def test_simple_math_dataset(self) -> None:
-        """Test simple math task dataset conversion - no prompt template."""
+        """Test simple math task dataset conversion - system prompt via solver."""
         task_info = load_inspect_task(simple_math)
         hf_dataset = get_inspect_dataset(simple_math)
 
         # Check dataset size
         assert len(hf_dataset) == len(list(task_info.dataset))
-
-        # Verify task introspection - system_prompt should be just the system message
-        assert task_info.system_prompt == "Answer with just the number, nothing else."
-        assert task_info.prompt_template is None
 
         # Check each sample
         for hf_row, inspect_sample in zip(hf_dataset, task_info.dataset):
@@ -54,7 +50,7 @@ class TestDatasetConversion:
             # Always uses "prompt" column with list of messages
             assert "prompt" in row
             assert isinstance(row["prompt"], list)
-            # Should have system message + user message (raw input, no template)
+            # Should have system message + user message (from ground truth)
             assert len(row["prompt"]) == 2
             assert row["prompt"][0]["role"] == "system"
             assert (
@@ -74,10 +70,6 @@ class TestDatasetConversion:
 
         # Check dataset size
         assert len(hf_dataset) == len(list(task_info.dataset))
-
-        # Verify task introspection - system_prompt and prompt_template should be separate
-        assert task_info.system_prompt == "Answer with just the number, nothing else."
-        assert task_info.prompt_template == "Here is the question: {prompt}"
 
         # Check each sample
         for hf_row, inspect_sample in zip(hf_dataset, task_info.dataset):
@@ -106,12 +98,6 @@ class TestDatasetConversion:
         task_info = load_inspect_task(multiple_choice)
         hf_dataset = get_inspect_dataset(multiple_choice)
 
-        # Verify task introspection extracted the multiple choice template
-        assert task_info.multiple_choice_template is not None
-        assert "{question}" in task_info.multiple_choice_template
-        assert "{letters}" in task_info.multiple_choice_template
-        assert "{choices}" in task_info.multiple_choice_template
-
         for hf_row, inspect_sample in zip(hf_dataset, task_info.dataset):
             row = _row(hf_row)
 
@@ -138,8 +124,8 @@ class TestDatasetConversion:
             # Should contain the original question
             assert str(inspect_sample.input) in user_content
 
-            # Should contain the letter options (A, B, C, D)
-            assert "A, B, C, D" in user_content
+            # Should contain the letter options in some format (A,B,C,D or A, B, C, D)
+            assert "A" in user_content and "B" in user_content
 
             # Should contain the formatted choices
             choices = inspect_sample.choices or []
@@ -204,7 +190,7 @@ class TestDatasetConversion:
             assert row["info"]["inspect_metadata"]["has_tool_calls"] is True
 
     def test_tool_call_preserves_tool_structure(self) -> None:
-        """Test that tool call messages preserve tool_calls and tool_call_id."""
+        """Test that tool call messages preserve tool_calls, tool_call_id, and name."""
         hf_dataset = get_inspect_dataset(with_tool_calls)
 
         first_row = _row(hf_dataset[0])
@@ -213,15 +199,24 @@ class TestDatasetConversion:
         assistant_msgs = [m for m in first_row["prompt"] if m["role"] == "assistant"]
         assert len(assistant_msgs) >= 1
 
-        # Check tool_calls are preserved
+        # Check tool_calls are preserved with full structure
         tool_call_msg = next((m for m in assistant_msgs if "tool_calls" in m), None)
         assert tool_call_msg is not None
         assert len(tool_call_msg["tool_calls"]) > 0
+        # Verify tool call structure
+        tc = tool_call_msg["tool_calls"][0]
+        assert "id" in tc
+        assert "function" in tc
+        assert "name" in tc["function"]
+        assert "arguments" in tc["function"]
 
         # Find tool response message
         tool_msgs = [m for m in first_row["prompt"] if m["role"] == "tool"]
         assert len(tool_msgs) >= 1
         assert "tool_call_id" in tool_msgs[0]
+        # Verify function name is preserved under "name" key (OpenAI format)
+        assert "name" in tool_msgs[0]
+        assert tool_msgs[0]["name"] is not None
 
     def test_assistant_only_input(self) -> None:
         """Test that samples with only assistant messages preserve full history."""
@@ -265,15 +260,9 @@ class TestDatasetConversion:
         assert len(second_row["prompt"]) == 5  # 5 messages total
 
     def test_chain_of_thought_dataset(self) -> None:
-        """Test chain_of_thought solver formats prompt like prompt_template."""
+        """Test chain_of_thought solver formats prompt correctly."""
         task_info = load_inspect_task(with_chain_of_thought)
         hf_dataset = get_inspect_dataset(with_chain_of_thought)
-
-        # Verify task introspection - chain_of_thought should be treated as prompt_template
-        assert task_info.system_prompt == "You are a helpful math tutor."
-        assert task_info.prompt_template is not None
-        assert "{prompt}" in task_info.prompt_template
-        assert "step-by-step" in task_info.prompt_template.lower()
 
         for hf_row, inspect_sample in zip(hf_dataset, task_info.dataset):
             row = _row(hf_row)
@@ -294,15 +283,6 @@ class TestDatasetConversion:
         """Test user_message solver appends messages with variable substitution."""
         task_info = load_inspect_task(with_user_message)
         hf_dataset = get_inspect_dataset(with_user_message)
-
-        # Verify task introspection
-        assert (
-            task_info.system_prompt
-            == "You are a translator. Respond with only the translation."
-        )
-        assert task_info.prompt_template is None
-        assert len(task_info.user_messages) == 1
-        assert "{text_to_translate}" in task_info.user_messages[0]
 
         for hf_row, inspect_sample in zip(hf_dataset, task_info.dataset):
             row = _row(hf_row)

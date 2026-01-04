@@ -69,3 +69,10 @@ Tests use fake task fixtures in `tests/fake_tasks.py`. Key test files:
 - `test_task_introspection.py`: Solver chain extraction tests
 - `test_integration.py`: End-to-end environment creation
 - `test_regressions.py`: Bug fix regression tests
+
+## Code Style
+
+- Prefer `match` statements over `isinstance` chains when dispatching on a set of types (e.g., `ChatMessageUser | ChatMessageAssistant | ChatMessageTool`)
+- Use pattern matching to extract attributes directly in case clauses (e.g., `case ChatMessageTool(tool_call_id=id, function=fn):`)
+- Extract shared logic into helper functions when match cases have common operations
+- **Fail loudly on missing keys**: Almost never use `.get(key, "")` or `.get(key, default)` for dict access. If a key is expected to be present, use `dict[key]` directly so missing keys cause an immediate crash. Only use `.get()` with a fallback when the key is genuinely optional. Silent fallbacks hide bugs.

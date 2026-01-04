@@ -87,7 +87,7 @@ def load_environment(
 Convenience function to just get the HuggingFace dataset from an Inspect task.
 
 ```python
-from inspect_verifiers_bridge.loader import get_inspect_dataset
+from inspect_verifiers_bridge.utils import get_inspect_dataset
 
 dataset = get_inspect_dataset(apps, max_samples=50)
 print(dataset[0])  # {'prompt': ..., 'answer': ..., 'info': ..., 'id': ...}

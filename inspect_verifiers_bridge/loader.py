@@ -5,8 +5,7 @@ Main loader: Convert Inspect tasks to Verifiers environments.
 from typing import Any, Callable, Literal
 
 import verifiers as vf
-from datasets import Dataset as HFDataset
-from inspect_ai import Task  # Still needed for type hints
+from inspect_ai import Task
 
 from inspect_verifiers_bridge import dataset as ds
 from inspect_verifiers_bridge import scoring, tasks
@@ -19,7 +18,6 @@ def load_environment(
     scoring_mode: Literal["live", "custom"] = "live",
     custom_reward_fn: Callable[..., float] | None = None,
     env_type: Literal["single_turn", "multi_turn", "tool"] = "single_turn",
-    system_prompt: str | None = None,
     max_samples: int | None = None,
     max_turns: int = 8,
     sandbox_type: str | None = None,
@@ -40,7 +38,6 @@ def load_environment(
             - "single_turn": SingleTurnEnv for Q&A tasks
             - "multi_turn": MultiTurnEnv for multi-step tasks
             - "tool": ToolEnv for tool-using tasks
-        system_prompt: Override the system prompt (if None, extract from task)
         max_samples: Limit number of samples from dataset
         max_turns: Max turns for multi-turn/tool environments
         sandbox_type: Override sandbox type (e.g., "docker", "local")
@@ -53,18 +50,10 @@ def load_environment(
     # Load and introspect the task
     task_info = tasks.load_inspect_task(task, **task_kwargs)
 
-    # Use provided system prompt or the one extracted during task introspection
-    effective_system_prompt = system_prompt or task_info.system_prompt
-
-    # Convert dataset with solver-extracted prompt modifications
+    # Convert dataset using ground truth solver execution
     hf_dataset = ds.inspect_dataset_to_hf(
-        task_info.dataset,
+        task_info.task,
         task_name=task_info.name,
-        system_prompt=effective_system_prompt,
-        prompt_template=task_info.prompt_template,
-        multiple_choice_template=task_info.multiple_choice_template,
-        user_messages=task_info.user_messages or None,
-        prompt_transformations=task_info.prompt_transformations or None,
         max_samples=max_samples,
     )
 
@@ -126,37 +115,3 @@ def load_environment(
         )
     else:
         raise ValueError(f"Unknown env_type: {env_type}")
-
-
-def get_inspect_dataset(
-    task: Callable[..., Task],
-    max_samples: int | None = None,
-    system_prompt: str | None = None,
-    **task_kwargs: Any,
-) -> HFDataset:
-    """
-    Convenience function to just get the HuggingFace dataset from an Inspect task.
-
-    Useful for inspection or custom processing.
-
-    Args:
-        task: A callable that returns an Inspect Task
-        max_samples: Limit number of samples
-        system_prompt: Override system prompt (if None, extract from task)
-        **task_kwargs: Arguments to pass to the task function
-
-    Returns:
-        HuggingFace Dataset
-    """
-    task_info = tasks.load_inspect_task(task, **task_kwargs)
-    effective_system_prompt = system_prompt or task_info.system_prompt
-    return ds.inspect_dataset_to_hf(
-        task_info.dataset,
-        task_name=task_info.name,
-        system_prompt=effective_system_prompt,
-        prompt_template=task_info.prompt_template,
-        multiple_choice_template=task_info.multiple_choice_template,
-        user_messages=task_info.user_messages or None,
-        prompt_transformations=task_info.prompt_transformations or None,
-        max_samples=max_samples,
-    )

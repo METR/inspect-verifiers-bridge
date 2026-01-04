@@ -5,25 +5,25 @@ This module provides the core mechanism to call Inspect scorers within the
 Verifiers reward function framework.
 """
 
-import asyncio
+import json
 import warnings
 from functools import partial
-from typing import Any
+from typing import Any, Callable
 
 import verifiers as vf
 from inspect_ai.model import (
     ChatMessageAssistant,
     ChatMessageSystem,
+    ChatMessageTool,
     ChatMessageUser,
     ModelOutput,
 )
 from inspect_ai.scorer import Score, Scorer, Target, value_to_float
 from inspect_ai.solver import TaskState
+from inspect_ai.tool import ToolCall
 
 from inspect_verifiers_bridge.sandbox import SandboxManager, sandbox_context
-
-# Type alias for model name to avoid strict type checking issues
-MODEL_NAME = "bridge-model"
+from inspect_verifiers_bridge.utils import BRIDGE_MODEL_NAME
 
 
 async def reward_from_inspect_scorer(
@@ -79,11 +79,11 @@ async def reward_from_inspect_scorer(
     # Reconstruct original input
     original_input = _extract_original_input(prompt)
 
-    # Build TaskState - use a generic model name
+    # Build TaskState
     assert "inspect_sample_id" in info, "info must contain 'inspect_sample_id'"
     assert "inspect_metadata" in info, "info must contain 'inspect_metadata'"
     task_state = TaskState(
-        model=MODEL_NAME,  # type: ignore[arg-type]
+        model=BRIDGE_MODEL_NAME,
         sample_id=info.get("inspect_sample_id", 0),
         epoch=0,
         input=original_input,
@@ -122,23 +122,42 @@ def _build_inspect_messages(
     """Convert Verifiers messages to Inspect ChatMessage objects."""
     messages: list[Any] = []
 
-    for msg in prompt:
-        role = msg.get("role", "user")
-        content = msg.get("content", "")
+    for msg in prompt + completion:
+        role = msg["role"]
+        content = msg["content"]
+
         if role == "system":
             messages.append(ChatMessageSystem(content=content))
         elif role == "user":
             messages.append(ChatMessageUser(content=content))
         elif role == "assistant":
-            messages.append(ChatMessageAssistant(content=content))
-
-    for msg in completion:
-        role = msg.get("role", "assistant")
-        content = msg.get("content", "")
-        if role == "assistant":
-            messages.append(ChatMessageAssistant(content=content))
-        elif role == "user":
-            messages.append(ChatMessageUser(content=content))
+            tool_calls = None
+            if "tool_calls" in msg:
+                tool_calls = [
+                    ToolCall(
+                        id=tc["id"],
+                        function=tc["function"]["name"],
+                        # Parse arguments from JSON string to dict (OpenAI format stores as string)
+                        arguments=json.loads(tc["function"]["arguments"])
+                        if isinstance(tc["function"]["arguments"], str)
+                        else tc["function"]["arguments"],
+                        type=tc.get("type", "function"),
+                    )
+                    for tc in msg["tool_calls"]
+                ]
+            messages.append(
+                ChatMessageAssistant(content=content, tool_calls=tool_calls)
+            )
+        elif role == "tool":
+            messages.append(
+                ChatMessageTool(
+                    content=content,
+                    tool_call_id=msg.get("tool_call_id"),
+                    function=msg.get("name"),
+                )
+            )
+        else:
+            raise ValueError(f"Unknown role: {role}")
 
     return messages
 
@@ -148,8 +167,8 @@ def _build_model_output(completion: list[dict[str, Any]]) -> ModelOutput:
     # Find the last assistant message
     last_assistant_content = ""
     for msg in reversed(completion):
-        if msg.get("role") == "assistant":
-            last_assistant_content = msg.get("content", "")
+        if msg["role"] == "assistant":
+            last_assistant_content = msg["content"]
             break
 
     return ModelOutput.from_content(
@@ -170,8 +189,25 @@ def _extract_original_input(prompt: list[dict[str, Any]]) -> str | list[Any]:
 
 def _score_to_float(score: Score) -> float:
     """Convert an Inspect Score to a float reward."""
+    # Defensive check - some scorers may return None value
+    assert score.value is not None
     converter = value_to_float()
-    return converter(score.value)
+    converted_score = converter(score.value)
+    return converted_score
+
+
+def _get_scorer_name(scorer: Scorer) -> str:
+    # Add __name__ attribute to partial function for Verifiers compatibility
+    # Use __qualname__ to get unique names (e.g., "expression_exact_match.<locals>.score")
+    # Extract the parent function name from qualname, or fall back to __name__ or class name
+    qualname = getattr(scorer, "__qualname__", "")
+    if ".<locals>." in qualname:
+        # Extract parent function name: "expression_exact_match.<locals>.score" -> "expression_exact_match"
+        scorer_name = qualname.split(".<locals>.")[0]
+    else:
+        scorer_name = getattr(scorer, "__name__", scorer.__class__.__name__)
+
+    return scorer_name
 
 
 def build_rubric_from_scorers(
@@ -194,60 +230,16 @@ def build_rubric_from_scorers(
         raise ValueError("At least one scorer is required")
 
     # Create reward functions for each scorer
-    reward_funcs = []
+    reward_funcs: list[Callable[..., Any]] = []
     for i, scorer in enumerate(scorers):
         func = partial(
             reward_from_inspect_scorer,
             scorer=scorer,
             sandbox_manager=sandbox_manager,
         )
-        # Add __name__ attribute to partial function for Verifiers compatibility
-        # Use __qualname__ to get unique names (e.g., "expression_exact_match.<locals>.score")
-        # Extract the parent function name from qualname, or fall back to __name__ or class name
-        qualname = getattr(scorer, "__qualname__", "")
-        if ".<locals>." in qualname:
-            # Extract parent function name: "expression_exact_match.<locals>.score" -> "expression_exact_match"
-            scorer_name = qualname.split(".<locals>.")[0]
-        else:
-            scorer_name = getattr(scorer, "__name__", scorer.__class__.__name__)
+        scorer_name = _get_scorer_name(scorer)
         # Add index suffix to guarantee uniqueness if there are duplicate names
         func.__name__ = f"inspect_{scorer_name}_{i}"  # type: ignore[attr-defined]
         reward_funcs.append(func)
 
     return vf.Rubric(funcs=reward_funcs, weights=weights)  # type: ignore[arg-type]
-
-
-def sync_reward_wrapper(
-    async_reward_func: Any,
-) -> Any:
-    """
-    Wrap an async reward function for synchronous use.
-
-    Some contexts may need synchronous rewards. This wrapper
-    handles running the async function in an event loop.
-    """
-
-    def sync_wrapper(
-        prompt: list[dict[str, Any]],
-        completion: list[dict[str, Any]],
-        answer: str | None,
-        state: dict[str, Any],
-        **kwargs: Any,
-    ) -> float:
-        loop = asyncio.get_event_loop()
-        if loop.is_running():
-            # If we're already in an async context, create a new task
-            import concurrent.futures
-
-            with concurrent.futures.ThreadPoolExecutor() as executor:
-                future = executor.submit(
-                    asyncio.run,
-                    async_reward_func(prompt, completion, answer, state, **kwargs),
-                )
-                return future.result()
-        else:
-            return loop.run_until_complete(
-                async_reward_func(prompt, completion, answer, state, **kwargs)
-            )
-
-    return sync_wrapper
