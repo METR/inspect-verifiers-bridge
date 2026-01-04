@@ -5,9 +5,8 @@ This module provides utilities to create and manage sandbox environments
 that can be used during reward computation in RL training.
 """
 
-import asyncio
 from contextlib import asynccontextmanager
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Any, AsyncIterator
 
 from inspect_ai._eval.task.sandbox import read_sandboxenv_file, resolve_sample_files
@@ -171,67 +170,6 @@ async def sandbox_context(
         sandbox_environments_context_var.reset(token_envs)
         sandbox_default_context_var.reset(token_default)
         sandbox_with_environments_context_var.reset(token_with)
-
-
-@dataclass
-class SandboxManager:
-    """
-    Manages sandbox lifecycle for a batch of samples.
-
-    This class handles creating, caching, and cleaning up sandboxes
-    for reward computation during RL training.
-    """
-
-    sandbox_config: SandboxConfig
-    task_name: str
-    _instances: dict[str | int, SandboxInstance] = field(
-        default_factory=dict, init=False
-    )
-    _lock: asyncio.Lock = field(default_factory=asyncio.Lock, init=False)
-
-    async def get_sandbox(
-        self,
-        sample_id: str | int,
-        sample_info: dict[str, Any],
-    ) -> dict[str, SandboxEnvironment]:
-        """
-        Get or create sandbox for a sample.
-
-        Args:
-            sample_id: Unique identifier for the sample
-            sample_info: The info dict from the sample
-
-        Returns:
-            Dictionary of sandbox environments
-        """
-        async with self._lock:
-            if sample_id not in self._instances:
-                self._instances[sample_id] = await create_sandbox_for_sample(
-                    sample_info=sample_info,
-                    task_name=self.task_name,
-                    sandbox_config=self.sandbox_config,
-                )
-            return self._instances[sample_id].environments
-
-    async def cleanup_sample(self, sample_id: str | int) -> None:
-        """Clean up sandbox for a specific sample."""
-        async with self._lock:
-            if sample_id in self._instances:
-                await cleanup_sandbox(self._instances[sample_id])
-                del self._instances[sample_id]
-
-    async def cleanup_all(self) -> None:
-        """Clean up all sandboxes."""
-        async with self._lock:
-            for instance in self._instances.values():
-                await cleanup_sandbox(instance)
-            self._instances.clear()
-
-    async def __aenter__(self) -> "SandboxManager":
-        return self
-
-    async def __aexit__(self, *args: object) -> None:
-        await self.cleanup_all()
 
 
 async def exec_in_sandbox(

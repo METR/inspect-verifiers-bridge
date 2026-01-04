@@ -196,11 +196,10 @@ class TestEnvironmentCreation:
     """Test environment creation and configuration."""
 
     def test_single_turn_env_creation(self) -> None:
-        """Test creating a SingleTurnEnv."""
+        """Test creating an environment (sandbox type determines env class)."""
         env = load_environment(
             simple_math,
             scoring_mode="live",
-            env_type="single_turn",
             sandbox_type="local",
         )
 
@@ -265,6 +264,12 @@ class TestSandboxScoring:
     @pytest.mark.asyncio
     async def test_code_execution_correct(self) -> None:
         """Test code execution scoring with correct code."""
+        from inspect_verifiers_bridge.sandbox import (
+            SandboxConfig,
+            cleanup_sandbox,
+            create_sandbox_for_sample,
+        )
+
         correct_code = """```python
 def add(a, b):
     return a + b
@@ -280,21 +285,40 @@ def add(a, b):
         sample = _row(dataset[0])
         prompt_messages = sample["prompt"]
         completion_messages = [{"role": "assistant", "content": correct_code}]
-        state = {"info": sample["info"]}
 
-        reward = await _call_reward(
-            env.rubric.funcs[0],
-            prompt=prompt_messages,
-            completion=completion_messages,
-            answer=sample["answer"],
-            state=state,
+        # Create sandbox and add to state (mimics what InspectSandboxEnv.setup_state does)
+        sandbox_config = SandboxConfig(sandbox_type="local")
+        sandbox_instance = await create_sandbox_for_sample(
+            sample_info=sample["info"],
+            task_name="test_task",
+            sandbox_config=sandbox_config,
         )
+        state = {
+            "info": sample["info"],
+            "_sandbox_envs": sandbox_instance.environments,
+        }
 
-        assert reward == 1.0
+        try:
+            reward = await _call_reward(
+                env.rubric.funcs[0],
+                prompt=prompt_messages,
+                completion=completion_messages,
+                answer=sample["answer"],
+                state=state,
+            )
+            assert reward == 1.0
+        finally:
+            await cleanup_sandbox(sandbox_instance)
 
     @pytest.mark.asyncio
     async def test_code_execution_incorrect(self) -> None:
         """Test code execution scoring with incorrect code."""
+        from inspect_verifiers_bridge.sandbox import (
+            SandboxConfig,
+            cleanup_sandbox,
+            create_sandbox_for_sample,
+        )
+
         wrong_code = """```python
 def add(a, b):
     return a - b  # Wrong!
@@ -310,22 +334,41 @@ def add(a, b):
         sample = _row(dataset[0])
         prompt_messages = sample["prompt"]
         completion_messages = [{"role": "assistant", "content": wrong_code}]
-        state = {"info": sample["info"]}
 
-        reward = await _call_reward(
-            env.rubric.funcs[0],
-            prompt=prompt_messages,
-            completion=completion_messages,
-            answer=sample["answer"],
-            state=state,
+        # Create sandbox and add to state
+        sandbox_config = SandboxConfig(sandbox_type="local")
+        sandbox_instance = await create_sandbox_for_sample(
+            sample_info=sample["info"],
+            task_name="test_task",
+            sandbox_config=sandbox_config,
         )
+        state = {
+            "info": sample["info"],
+            "_sandbox_envs": sandbox_instance.environments,
+        }
 
-        assert reward == 0.0
+        try:
+            reward = await _call_reward(
+                env.rubric.funcs[0],
+                prompt=prompt_messages,
+                completion=completion_messages,
+                answer=sample["answer"],
+                state=state,
+            )
+            assert reward == 0.0
+        finally:
+            await cleanup_sandbox(sandbox_instance)
 
     @pytest.mark.asyncio
     @pytest.mark.requires_docker
     async def test_docker_sandbox_scoring(self) -> None:
         """Test scoring with Docker sandbox."""
+        from inspect_verifiers_bridge.sandbox import (
+            SandboxConfig,
+            cleanup_sandbox,
+            create_sandbox_for_sample,
+        )
+
         correct_code = """```python
 def double(x):
     return x * 2
@@ -341,17 +384,30 @@ def double(x):
         sample = _row(dataset[1])  # double function
         prompt_messages = sample["prompt"]
         completion_messages = [{"role": "assistant", "content": correct_code}]
-        state = {"info": sample["info"]}
 
-        reward = await _call_reward(
-            env.rubric.funcs[0],
-            prompt=prompt_messages,
-            completion=completion_messages,
-            answer=sample["answer"],
-            state=state,
+        # Create sandbox and add to state
+        sandbox_config = SandboxConfig(sandbox_type="docker")
+        sandbox_instance = await create_sandbox_for_sample(
+            sample_info=sample["info"],
+            task_name="test_task",
+            sandbox_config=sandbox_config,
         )
+        state = {
+            "info": sample["info"],
+            "_sandbox_envs": sandbox_instance.environments,
+        }
 
-        assert reward == 1.0
+        try:
+            reward = await _call_reward(
+                env.rubric.funcs[0],
+                prompt=prompt_messages,
+                completion=completion_messages,
+                answer=sample["answer"],
+                state=state,
+            )
+            assert reward == 1.0
+        finally:
+            await cleanup_sandbox(sandbox_instance)
 
 
 class TestEdgeCases:

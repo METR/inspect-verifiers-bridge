@@ -377,12 +377,20 @@ class TestSandboxScoringConcurrent:
 
     This is the actual scenario that was failing: vf-eval runs multiple
     rollouts per example concurrently, and second+ rollouts would fail.
+
+    In the new architecture, each rollout gets its own sandbox via setup_state,
+    so this tests that multiple sandboxes can run concurrently.
     """
 
     @pytest.mark.asyncio
     async def test_multiple_concurrent_scoring_calls(self) -> None:
         """Test that multiple concurrent scoring calls all succeed."""
         from inspect_verifiers_bridge import load_environment
+        from inspect_verifiers_bridge.sandbox import (
+            SandboxConfig,
+            cleanup_sandbox,
+            create_sandbox_for_sample,
+        )
 
         from .fake_tasks import code_execution
 
@@ -402,17 +410,33 @@ def add(a, b):
         sample = _row(dataset[0])
 
         async def score_once() -> float:
-            reward_fn = env.rubric.funcs[0]
-            result = reward_fn(
-                prompt=sample["prompt"],
-                completion=[{"role": "assistant", "content": correct_code}],
-                answer=sample["answer"],
-                state={"info": sample["info"]},
+            """Score with a fresh sandbox (mimics InspectSandboxEnv.setup_state)."""
+            # Create sandbox for this "rollout"
+            sandbox_config = SandboxConfig(sandbox_type="local")
+            sandbox_instance = await create_sandbox_for_sample(
+                sample_info=sample["info"],
+                task_name="test_task",
+                sandbox_config=sandbox_config,
             )
-            # result may be a coroutine or a value
-            if asyncio.iscoroutine(result):
-                result = await result
-            return float(cast(float, result))
+            state = {
+                "info": sample["info"],
+                "_sandbox_envs": sandbox_instance.environments,
+            }
+
+            try:
+                reward_fn = env.rubric.funcs[0]
+                result = reward_fn(
+                    prompt=sample["prompt"],
+                    completion=[{"role": "assistant", "content": correct_code}],
+                    answer=sample["answer"],
+                    state=state,
+                )
+                # result may be a coroutine or a value
+                if asyncio.iscoroutine(result):
+                    result = await result
+                return float(cast(float, result))
+            finally:
+                await cleanup_sandbox(sandbox_instance)
 
         # Run multiple scoring calls concurrently (simulating multiple rollouts)
         results = await asyncio.gather(

@@ -22,7 +22,7 @@ from inspect_ai.scorer import Score, Scorer, Target, value_to_float
 from inspect_ai.solver import TaskState
 from inspect_ai.tool import ToolCall
 
-from inspect_verifiers_bridge.sandbox import SandboxManager, sandbox_context
+from inspect_verifiers_bridge.sandbox import sandbox_context
 from inspect_verifiers_bridge.utils import BRIDGE_MODEL_NAME
 
 
@@ -33,7 +33,6 @@ async def reward_from_inspect_scorer(
     state: dict[str, Any],
     *,
     scorer: Scorer,
-    sandbox_manager: SandboxManager | None = None,
 ) -> float:
     """
     Verifiers reward function that wraps an Inspect scorer.
@@ -41,13 +40,15 @@ async def reward_from_inspect_scorer(
     This function reconstructs a minimal TaskState from Verifiers state
     and calls the Inspect scorer to get a reward.
 
+    Sandbox context is obtained from state["_sandbox_envs"] if present
+    (set by InspectSandboxEnv.setup_state).
+
     Args:
         prompt: The prompt messages (from Verifiers)
         completion: The completion messages (from Verifiers)
         answer: The expected answer (from Verifiers dataset)
-        state: The Verifiers state dict containing info
+        state: The Verifiers state dict containing info and optional sandbox
         scorer: The Inspect scorer to use
-        sandbox_manager: Optional sandbox manager for sandbox-based scorers
 
     Returns:
         Float reward value (typically 0.0-1.0)
@@ -101,11 +102,11 @@ async def reward_from_inspect_scorer(
         metadata=info["inspect_metadata"],
     )
 
-    # If we have a sandbox manager, set up sandbox context
+    # Get sandbox from state if available (set by InspectSandboxEnv.setup_state)
     score: Score | None
-    if sandbox_manager is not None:
-        sandboxes = await sandbox_manager.get_sandbox(sample_id, info)
-        async with sandbox_context(sandboxes):
+    sandbox_envs = state.get("_sandbox_envs")
+    if sandbox_envs is not None:
+        async with sandbox_context(sandbox_envs):
             score = await scorer(task_state, target)
     else:
         # Call scorer without sandbox context
@@ -209,7 +210,6 @@ def _get_scorer_name(scorer: Scorer) -> str:
 def build_rubric_from_scorers(
     scorers: list[Scorer],
     weights: list[float] | None = None,
-    sandbox_manager: SandboxManager | None = None,
 ) -> vf.Rubric:
     """
     Build a Verifiers Rubric from a list of Inspect scorers.
@@ -217,7 +217,6 @@ def build_rubric_from_scorers(
     Args:
         scorers: List of Inspect Scorer functions
         weights: Optional weights for each scorer
-        sandbox_manager: Optional sandbox manager for sandbox-based scorers
 
     Returns:
         A Verifiers Rubric that calls the Inspect scorers
@@ -228,11 +227,7 @@ def build_rubric_from_scorers(
     # Create reward functions for each scorer
     reward_funcs: list[Callable[..., Any]] = []
     for i, scorer in enumerate(scorers):
-        func = partial(
-            reward_from_inspect_scorer,
-            scorer=scorer,
-            sandbox_manager=sandbox_manager,
-        )
+        func = partial(reward_from_inspect_scorer, scorer=scorer)
         scorer_name = _get_scorer_name(scorer)
         # Add index suffix to guarantee uniqueness if there are duplicate names
         func.__name__ = f"inspect_{scorer_name}_{i}"  # type: ignore[attr-defined]
