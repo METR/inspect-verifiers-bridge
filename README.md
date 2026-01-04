@@ -9,41 +9,65 @@ Inspect AI is a framework for evaluating LLMs with a rich ecosystem of evaluatio
 - Import existing Inspect tasks and train on them with prime-rl
 - Preserve Inspect scoring semantics as Verifiers reward functions
 - Support sandbox-based scoring (Docker, local) for code execution tasks
+- Multi-turn agentic environments with bash and submit tools
 - Convert Inspect datasets to HuggingFace datasets
 
 ## Installation
 
 ```bash
-uv add inspect-bridge
+uv add inspect-verifiers-bridge
 ```
 
 Or for development:
 
 ```bash
 git clone <repo>
-cd inspect_verifiers_bridge
+cd inspect-verifiers-bridge
 uv sync
 ```
 
 ## Quick Start
 
 ```python
-from inspect_evals.apps import apps
+from inspect_evals.humaneval import humaneval
 from inspect_verifiers_bridge import load_environment
 
 # Load an Inspect task as a Verifiers environment
 env = load_environment(
-    apps,
+    humaneval,
+    env_type="single_turn",   # or "multi_turn" for agentic tasks
     scoring_mode="live",      # Use Inspect's native scorers
-    sandbox_type="docker",    # Use Docker for code execution
+    sandbox_type="local",     # Use local sandbox for code execution
     max_samples=100,          # Limit dataset size
 )
 
 # The environment is ready for training
+print(f"Environment: {type(env).__name__}")
 print(f"Dataset size: {len(env.dataset)}")
-# System prompt is embedded in each sample's prompt list
-print(f"First sample prompt: {env.dataset[0]['prompt'][:2]}...")
 ```
+
+## Examples
+
+The `examples/` directory contains vf-eval compatible scripts for each environment type:
+
+```bash
+# Single turn, no sandbox (GSM8K math reasoning)
+vf-eval gsm8k_example -p examples/ -m gpt-4o-mini -n 10
+
+# Single turn with sandbox (HumanEval code generation)
+vf-eval humaneval_example -p examples/ -m gpt-4o-mini -n 10
+
+# Multi-turn with tools (HumanEval agentic)
+vf-eval humaneval_multiturn_example -p examples/ -m gpt-4o-mini -n 5
+```
+
+Each example exports a `load_environment()` function that vf-eval can call:
+
+| Example | Environment | Tools | Use Case |
+|---------|-------------|-------|----------|
+| `gsm8k_example.py` | `SingleTurnEnv` | None | Math reasoning |
+| `humaneval_example.py` | `InspectSandboxEnv` | `_bash` | Code generation |
+| `humaneval_multiturn_example.py` | `InspectSandboxEnv` | `_bash`, `_submit` | Agentic coding |
 
 ## API Reference
 
@@ -57,12 +81,13 @@ def load_environment(
     *,
     scoring_mode: Literal["live", "custom"] = "live",
     custom_reward_fn: Callable[..., float] | None = None,
-    env_type: Literal["single_turn", "multi_turn", "tool"] = "single_turn",
-    system_prompt: str | None = None,
+    env_type: Literal["single_turn", "multi_turn"] = "single_turn",
     max_samples: int | None = None,
-    max_turns: int = 8,
+    max_turns: int = 10,
     sandbox_type: str | None = None,
     sandbox_config: str | None = None,
+    include_bash: bool = True,
+    include_submit: bool | None = None,
     **task_kwargs,
 ) -> vf.Environment:
 ```
@@ -71,27 +96,26 @@ def load_environment(
 
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|
-| `task` | `Callable[..., Task]` | required | Inspect task function (e.g., `apps` from inspect_evals) |
+| `task` | `Callable[..., Task]` | required | Inspect task function (e.g., `humaneval` from inspect_evals) |
 | `scoring_mode` | `"live" \| "custom"` | `"live"` | Use Inspect scorers directly or provide custom reward |
 | `custom_reward_fn` | `Callable` | `None` | Custom reward function (required if `scoring_mode="custom"`) |
-| `env_type` | `str` | `"single_turn"` | Environment type: `single_turn`, `multi_turn`, or `tool` |
-| `system_prompt` | `str` | `None` | Override system prompt (auto-extracted if None) |
+| `env_type` | `"single_turn" \| "multi_turn"` | `"single_turn"` | Environment type (multi_turn requires sandbox) |
 | `max_samples` | `int` | `None` | Limit number of samples from dataset |
-| `max_turns` | `int` | `8` | Max turns for multi-turn/tool environments |
+| `max_turns` | `int` | `10` | Max turns for multi-turn environments |
 | `sandbox_type` | `str` | `None` | Override sandbox type (`"docker"`, `"local"`) |
 | `sandbox_config` | `str` | `None` | Path to sandbox config file |
+| `include_bash` | `bool` | `True` | Include bash tool in sandbox environments |
+| `include_submit` | `bool` | `None` | Include submit tool (auto: True for multi_turn) |
 | `**task_kwargs` | `Any` | - | Arguments passed to the Inspect task function |
 
-### `get_inspect_dataset`
+**Environment Selection:**
 
-Convenience function to just get the HuggingFace dataset from an Inspect task.
-
-```python
-from inspect_verifiers_bridge.utils import get_inspect_dataset
-
-dataset = get_inspect_dataset(apps, max_samples=50)
-print(dataset[0])  # {'prompt': ..., 'answer': ..., 'info': ..., 'id': ...}
-```
+| env_type | sandbox | Result |
+|----------|---------|--------|
+| `single_turn` | No | `SingleTurnEnv` |
+| `single_turn` | Yes | `InspectSandboxEnv(max_turns=1)` |
+| `multi_turn` | No | `NotImplementedError` |
+| `multi_turn` | Yes | `InspectSandboxEnv(max_turns=N)` with submit tool |
 
 ### `load_inspect_task`
 
@@ -100,10 +124,10 @@ Load and introspect an Inspect task without converting it.
 ```python
 from inspect_verifiers_bridge.tasks import load_inspect_task
 
-task_info = load_inspect_task(apps)
+task_info = load_inspect_task(humaneval)
 print(f"Task: {task_info.name}")
 print(f"Sandbox: {task_info.sandbox_type}")
-print(f"Has tools: {task_info.solver_has_tools}")
+print(f"Scorers: {len(task_info.scorers)}")
 ```
 
 ## Scoring Modes
@@ -141,18 +165,51 @@ env = load_environment(
 
 ## Sandbox Support
 
-For tasks that require code execution (like APPS, HumanEval), the bridge supports:
+For tasks that require code execution (like HumanEval, APPS), the bridge supports:
 
 - **Docker sandbox**: Full isolation, recommended for untrusted code
 - **Local sandbox**: Faster, runs code directly on host
 
 ```python
 # Docker sandbox (default for tasks that specify sandbox="docker")
-env = load_environment(apps, sandbox_type="docker")
+env = load_environment(humaneval, sandbox_type="docker")
 
 # Local sandbox (faster, less isolated)
-env = load_environment(apps, sandbox_type="local")
+env = load_environment(humaneval, sandbox_type="local")
 ```
+
+### Per-Rollout Sandbox Lifecycle
+
+When using `InspectSandboxEnv`, each rollout gets a fresh sandbox:
+
+1. **setup_state()**: Creates sandbox for this rollout
+2. **Rollout loop**: Model interacts with bash/submit tools
+3. **Scoring**: Scorer runs with sandbox context
+4. **cleanup()**: Sandbox destroyed after scoring completes
+
+This ensures no state contamination between rollouts and supports concurrent execution via `asyncio.gather()`.
+
+## Multi-Turn Environments
+
+For agentic tasks, use `env_type="multi_turn"`:
+
+```python
+env = load_environment(
+    humaneval,
+    env_type="multi_turn",
+    max_turns=10,
+    sandbox_type="local",
+)
+```
+
+**Available tools:**
+
+| Tool | Description |
+|------|-------------|
+| `_bash` | Execute bash commands in the sandbox |
+| `_submit` | Submit final answer and end the rollout |
+
+The model can use these tools iteratively until it calls `_submit` or reaches `max_turns`.
 
 ## Dataset Format
 
@@ -162,13 +219,14 @@ The bridge converts Inspect `Sample` objects to HuggingFace dataset rows:
 |-------|------|-------------|
 | `prompt` | `list[dict]` | List of messages (always includes system prompt) |
 | `answer` | `str \| None` | Target answer (converted to string) |
-| `id` | `str \| int` | Sample identifier |
+| `id` | `str \| int` | Sample identifier (auto-generated if not set) |
 | `info` | `dict` | All Inspect metadata preserved |
 
 The `prompt` field is always a list of message dicts with `role` and `content` keys. For chat inputs with tool calls, it also preserves `tool_calls` and `tool_call_id`.
 
 The `info` dict contains:
 - `inspect_sample_id`: Original sample ID
+- `inspect_input_raw`: Original input (pre-solver)
 - `inspect_target_raw`: Original target (may be list, dict, etc.)
 - `inspect_choices`: Multiple choice options
 - `inspect_metadata`: Sample metadata
@@ -188,7 +246,9 @@ The `info` dict contains:
 | Model-graded scorers | ✅ | Requires API access |
 | Sandbox scoring | ✅ | Docker and local |
 | Custom scorers | ✅ | Full support |
-| Tool use | 🚧 | Planned |
+| Single-turn environments | ✅ | `SingleTurnEnv` or `InspectSandboxEnv` |
+| Multi-turn with tools | ✅ | `InspectSandboxEnv` with bash/submit |
+| Per-rollout sandbox lifecycle | ✅ | Fresh sandbox per rollout |
 | Multi-agent | ❌ | Out of scope |
 
 ## Testing
@@ -204,6 +264,7 @@ Tests cover:
 - Scoring comparison (bridge vs native Inspect)
 - Environment creation
 - Sandbox scoring (local and Docker)
+- Concurrent sandbox execution
 - Edge cases
 
 ## Architecture
@@ -211,11 +272,18 @@ Tests cover:
 ```
 inspect_verifiers_bridge/
 ├── __init__.py      # Public API (load_environment)
-├── loader.py        # Main loader and environment creation
+├── loader.py        # Main loader and environment selection
+├── environment.py   # InspectSandboxEnv with per-rollout lifecycle
 ├── tasks.py         # Task introspection utilities
 ├── dataset.py       # Sample → HuggingFace dataset conversion
+├── ground_truth.py  # Solver execution for prompt construction
 ├── scoring.py       # Inspect scorer → Verifiers rubric bridge
-└── sandbox.py       # Sandbox management for code execution
+└── sandbox.py       # Sandbox creation and context management
+
+examples/
+├── gsm8k_example.py              # Single turn, no sandbox
+├── humaneval_example.py          # Single turn with sandbox
+└── humaneval_multiturn_example.py # Multi-turn with tools
 ```
 
 ## Control Flow: Loading an Inspect Task
@@ -233,34 +301,29 @@ This section provides a detailed walkthrough of what happens when you call `load
 ┌─────────────────────────────────────────────────────────────────────────────┐
 │  1. TASK INTROSPECTION                                                      │
 │     load_inspect_task(task_fn) → InspectTaskInfo                            │
-│     Extracts: system_prompt, prompt_template, multiple_choice_template,     │
-│               user_messages, scorers, sandbox_type, unknown_solvers         │
+│     Extracts: scorers, sandbox_type, solver_has_tools                       │
 └─────────────────────────────────────────────────────────────────────────────┘
                                       │
                                       ▼
 ┌─────────────────────────────────────────────────────────────────────────────┐
 │  2. DATASET CONVERSION                                                      │
-│     inspect_dataset_to_hf(dataset, templates...) → HuggingFace Dataset      │
-│     Applies: system_prompt, prompt_template, multiple_choice_template,      │
-│              user_messages (with variable substitution from metadata)       │
+│     inspect_dataset_to_hf(task, task_name) → HuggingFace Dataset            │
+│     Runs solver pipeline (without model) to get ground truth prompts        │
 └─────────────────────────────────────────────────────────────────────────────┘
                                       │
                                       ▼
 ┌─────────────────────────────────────────────────────────────────────────────┐
-│  3. SANDBOX SETUP (if needed)                                               │
-│     SandboxManager(config) → manages sandbox lifecycle                      │
-└─────────────────────────────────────────────────────────────────────────────┘
-                                      │
-                                      ▼
-┌─────────────────────────────────────────────────────────────────────────────┐
-│  4. RUBRIC CREATION                                                         │
+│  3. RUBRIC CREATION                                                         │
 │     build_rubric_from_scorers(scorers) → Verifiers Rubric                   │
+│     Wraps Inspect scorers in reward functions with sandbox context          │
 └─────────────────────────────────────────────────────────────────────────────┘
                                       │
                                       ▼
 ┌─────────────────────────────────────────────────────────────────────────────┐
-│  5. ENVIRONMENT CREATION                                                    │
-│     vf.SingleTurnEnv | vf.ToolEnv → ready for training                      │
+│  4. ENVIRONMENT CREATION                                                    │
+│     Based on env_type and sandbox:                                          │
+│     - SingleTurnEnv (no sandbox, single turn)                               │
+│     - InspectSandboxEnv (sandbox, single or multi-turn)                     │
 └─────────────────────────────────────────────────────────────────────────────┘
 ```
 
@@ -268,7 +331,7 @@ This section provides a detailed walkthrough of what happens when you call `load
 
 ### Step 1: Task Introspection
 
-**Entry Point:** `loader.py:54`
+**Entry Point:** `loader.py`
 
 ```python
 task_info = tasks.load_inspect_task(task, **task_kwargs)
@@ -295,28 +358,7 @@ if task.scorer is not None:
         scorers = task.scorer
     else:
         scorers = [task.scorer]
-
-# Check for tool usage (heuristic)
-solver_has_tools = _solver_has_tools(task.solver)
-
-# Extract solver information (system_prompt, templates, etc.)
-solver_info = _extract_solver_info(task)
 ```
-
-**Solver extraction (`_extract_solver_info`)** inspects the solver chain and extracts content from known built-in solvers:
-
-| Solver | Extracted As | Description |
-|--------|--------------|-------------|
-| `system_message` | `system_prompt` | System prompt text |
-| `prompt_template` | `prompt_template` | Template with `{prompt}` placeholder |
-| `chain_of_thought` | `prompt_template` | CoT template (also uses `{prompt}`) |
-| `multiple_choice` | `multiple_choice_template` | Template with `{question}`, `{letters}`, `{choices}` |
-| `user_message` | `user_messages` | Additional messages (may have `{var}` placeholders) |
-| `generate` | - | No extraction needed |
-| `use_tools` | - | Tracked via `solver_has_tools` flag |
-| `self_critique` | - | Warning emitted (complex multi-model flow) |
-
-Unknown/custom solvers are tracked in `unknown_solvers` and emit a warning.
 
 **Returns:** `InspectTaskInfo` dataclass with:
 - `task`: The Inspect Task object
@@ -325,303 +367,203 @@ Unknown/custom solvers are tracked in `unknown_solvers` and emit a warning.
 - `scorers`: List of scorer functions
 - `sandbox_type`: "docker" | "local" | None
 - `solver_has_tools`: bool
-- `system_prompt`: str | None
-- `prompt_template`: str | None (template with `{prompt}`)
-- `multiple_choice_template`: str | None (template with `{question}`, `{letters}`, `{choices}`)
-- `user_messages`: list[str] (additional user messages, may have `{var}` placeholders)
-- `unknown_solvers`: list[str]
-- `metadata`: dict
-
-**Example:** For a chain-of-thought task:
-
-```python
-# Inspect task definition:
-solver=[
-    system_message("You are a math tutor."),
-    chain_of_thought(),
-    generate(),
-]
-
-# Extracted:
-# system_prompt: "You are a math tutor."
-# prompt_template: "{prompt}\n\nBefore answering, reason step-by-step..."
-```
 
 ---
 
 ### Step 2: Dataset Conversion
 
-**Entry Point:** `loader.py:60-68`
+**Entry Point:** `loader.py`
 
 ```python
 hf_dataset = ds.inspect_dataset_to_hf(
-    task_info.dataset,
+    task_info.task,
     task_name=task_info.name,
-    system_prompt=effective_system_prompt,
-    prompt_template=task_info.prompt_template,
-    multiple_choice_template=task_info.multiple_choice_template,
-    user_messages=task_info.user_messages or None,
     max_samples=max_samples,
 )
 ```
 
 **What happens in `inspect_dataset_to_hf()`:**
 
-For each sample, `sample_to_row()` builds the prompt as a list of messages, applying templates:
+For each sample, the solver pipeline is executed (without calling the model) to produce the ground truth prompt:
 
-1. **System message**: Added first (if `system_prompt` is provided)
-2. **User message**: Formatted based on available templates:
-   - If `multiple_choice_template` + choices: Format with `{question}`, `{letters}`, `{choices}`
-   - If `prompt_template`: Replace `{prompt}` with sample input
-   - Otherwise: Use raw sample input
-3. **Additional user messages**: Appended from `user_messages` with `{var}` substitution from metadata
+1. **Ground truth execution**: Runs all prompt-engineering solvers (`system_message`, `prompt_template`, `chain_of_thought`, etc.) stopping before `generate()`
+2. **Message extraction**: Extracts the resulting `state.messages` list
+3. **Serialization**: Converts `ChatMessage` objects to dicts
 
-**Template application examples:**
-
-```python
-# prompt_template: "Question: {prompt}"
-# Input: "What is 2+2?"
-# Result: "Question: What is 2+2?"
-
-# multiple_choice_template: "{question}\n\n{choices}\n\nAnswer: {letters}"
-# Input: "What color is the sky?"
-# Choices: ["Red", "Blue", "Green"]
-# Result: "What color is the sky?\n\nA) Red\nB) Blue\nC) Green\n\nAnswer: A, B, C"
-
-# user_message with variable substitution:
-# Template: "The text is: {text_to_translate}"
-# Metadata: {"text_to_translate": "Hello"}
-# Result: "The text is: Hello"
-```
+**Auto-ID generation:** Samples without IDs (like GSM8K) automatically get index-based IDs.
 
 **Output row structure:**
 
 ```python
 {
     "prompt": [                               # Always a list of messages
-        {"role": "system", "content": "You are a math tutor."},
-        {"role": "user", "content": "What is 2+2?\n\nReason step-by-step..."},
+        {"role": "system", "content": "You are a helpful assistant."},
+        {"role": "user", "content": "Write a function to add two numbers..."},
     ],
-    "answer": "4",                            # String target
+    "answer": "def add(a, b): return a + b",  # String target
     "info": {
-        "inspect_sample_id": "math_1",
-        "inspect_target_raw": "4",            # Original target (may be list)
-        "inspect_choices": None,              # Multiple choice options
-        "inspect_metadata": {"difficulty": "easy"},
-        "inspect_sandbox": None,              # Per-sample sandbox config
-        "inspect_files": {},                  # Files for sandbox
-        "inspect_setup": None,                # Setup script
-        "inspect_task_name": "simple_math",
+        "inspect_sample_id": "0",
+        "inspect_input_raw": "Write a function...",  # Pre-solver input
+        "inspect_target_raw": "def add...",
+        "inspect_metadata": {},
+        "inspect_sandbox": None,
+        "inspect_files": {},
+        "inspect_setup": None,
+        "inspect_task_name": "humaneval",
     },
-    "id": "math_1",
+    "id": "0",
 }
 ```
 
-> **Note:** The `"prompt"` column is always a list of message dicts, ready for use. This preserves full conversation history including tool calls, assistant messages, and multi-turn history.
-
 ---
 
-### Step 3: Sandbox Setup
+### Step 3: Rubric Creation
 
-**Entry Point:** `loader.py:70-82`
-
-```python
-effective_sandbox_type = sandbox_type or task_info.sandbox_type
-sandbox_manager: SandboxManager | None = None
-
-if scoring_mode == "live" and effective_sandbox_type:
-    sandbox_manager = SandboxManager(
-        sandbox_config=SandboxConfig(
-            sandbox_type=effective_sandbox_type,  # "docker" or "local"
-            config=sandbox_config,
-        ),
-        task_name=task_info.name,
-    )
-```
-
-**Branch conditions:**
-
-| scoring_mode | sandbox_type | sandbox_manager |
-|--------------|--------------|-----------------|
-| `"live"` | `"docker"` | ✅ Created |
-| `"live"` | `"local"` | ✅ Created |
-| `"live"` | `None` | ❌ Not needed |
-| `"custom"` | any | ❌ Not needed |
-
-**Sandbox lifecycle (during reward computation):**
-
-```
-┌─────────────────────────────────────────────────────────────────────────────┐
-│  SandboxManager.get_sandbox(sample_id, info)                                │
-│                                                                             │
-│  ┌─────────────────────┐    ┌─────────────────────┐                         │
-│  │ First call for ID   │───▶│ create_sandbox_for  │                         │
-│  │ (not cached)        │    │ _sample()           │                         │
-│  └─────────────────────┘    └─────────────────────┘                         │
-│           │                           │                                     │
-│           │                           ▼                                     │
-│           │                 ┌─────────────────────┐                         │
-│           │                 │ init_sandbox_envs   │  Sets ContextVars       │
-│           │                 │ _sample()           │                         │
-│           │                 └─────────────────────┘                         │
-│           │                           │                                     │
-│           ▼                           ▼                                     │
-│  ┌─────────────────────┐    ┌─────────────────────┐                         │
-│  │ Subsequent calls    │───▶│ Return cached       │                         │
-│  │ (same sample_id)    │    │ sandbox             │                         │
-│  └─────────────────────┘    └─────────────────────┘                         │
-└─────────────────────────────────────────────────────────────────────────────┘
-```
-
----
-
-### Step 4: Rubric Creation
-
-**Entry Point:** `loader.py:84-100`
+**Entry Point:** `loader.py`
 
 ```python
 if scoring_mode == "live":
-    if not task_info.scorers:
-        raise ValueError("Task has no scorers")
-    rubric = scoring.build_rubric_from_scorers(
-        task_info.scorers,
-        sandbox_manager=sandbox_manager,
-    )
+    rubric = scoring.build_rubric_from_scorers(task_info.scorers)
 elif scoring_mode == "custom":
-    if custom_reward_fn is None:
-        raise ValueError("custom_reward_fn required")
     rubric = vf.Rubric(funcs=[custom_reward_fn])
 ```
 
 **Building reward functions from scorers:**
 
 ```python
-# scoring.py:177-195
+# scoring.py
 reward_funcs = []
 for i, scorer in enumerate(scorers):
     # Wrap scorer in a partial function
-    func = partial(
-        reward_from_inspect_scorer,
-        scorer=scorer,
-        sandbox_manager=sandbox_manager,
-    )
+    func = partial(reward_from_inspect_scorer, scorer=scorer)
 
     # Extract unique name from __qualname__
-    # e.g., "expression_exact_match.<locals>.score" → "expression_exact_match"
-    qualname = getattr(scorer, "__qualname__", "")
-    if ".<locals>." in qualname:
-        scorer_name = qualname.split(".<locals>.")[0]
-    else:
-        scorer_name = getattr(scorer, "__name__", ...)
+    # e.g., "verify.<locals>.score" → "verify"
+    scorer_name = _get_scorer_name(scorer)
 
     # Add index for uniqueness (prevents metric overwriting)
     func.__name__ = f"inspect_{scorer_name}_{i}"
     reward_funcs.append(func)
 
-return vf.Rubric(funcs=reward_funcs, weights=weights)
+return vf.Rubric(funcs=reward_funcs)
 ```
 
 **Reward function flow (during training):**
 
 ```
-┌─────────────────────────────────────────────────────────────────────────────┐
-│  reward_from_inspect_scorer(prompt, completion, answer, state)              │
-└─────────────────────────────────────────────────────────────────────────────┘
-                                      │
-                    ┌─────────────────┴─────────────────┐
-                    ▼                                   ▼
-        ┌───────────────────────┐           ┌───────────────────────┐
-        │ Extract target from   │           │ Build TaskState for   │
-        │ info["inspect_target  │           │ Inspect scorer        │
-        │ _raw"]                │           │                       │
-        └───────────────────────┘           └───────────────────────┘
-                    │                                   │
-                    └─────────────────┬─────────────────┘
-                                      ▼
-                    ┌─────────────────────────────────────┐
-                    │ sandbox_manager is not None?        │
-                    └─────────────────────────────────────┘
-                           │                    │
-                         Yes                   No
-                           ▼                    ▼
-            ┌───────────────────────┐  ┌───────────────────────┐
-            │ get_sandbox()         │  │ Call scorer directly  │
-            │ async with sandbox_   │  │                       │
-            │ context(sandboxes):   │  │                       │
-            │   score = scorer()    │  │                       │
-            └───────────────────────┘  └───────────────────────┘
-                           │                    │
-                           └────────┬───────────┘
-                                    ▼
-                    ┌───────────────────────────────────┐
-                    │ _score_to_float(score) → 0.0-1.0 │
-                    └───────────────────────────────────┘
+reward_from_inspect_scorer(prompt, completion, answer, state)
+    │
+    ├── Build TaskState from Verifiers state
+    │   - Uses state["info"]["inspect_input_raw"] for TaskState.input
+    │   - Converts messages to Inspect ChatMessage objects
+    │
+    ├── Get sandbox context from state["_sandbox_envs"] (if present)
+    │
+    └── Call Inspect scorer within sandbox context
+        │
+        └── Convert Score to float (0.0-1.0)
 ```
 
 **Critical: ContextVar Setup for Concurrent Rollouts**
 
-When scoring with sandboxes, the `sandbox_context()` must set all three ContextVars that Inspect expects:
+When scoring with sandboxes, the `sandbox_context()` sets all three ContextVars that Inspect expects:
 
 ```python
-# sandbox.py:155-166
+# sandbox.py
 async with sandbox_context(sandboxes):
     # Sets these ContextVars:
-    token_envs = sandbox_environments_context_var.set(sandboxes)
-    token_default = sandbox_default_context_var.set(default_name)
-    token_with = sandbox_with_environments_context_var.set({})
+    sandbox_environments_context_var.set(sandboxes)
+    sandbox_default_context_var.set(default_name)
+    sandbox_with_environments_context_var.set({})
 
     # Now sandbox() calls inside scorer will work
     yield sandboxes
-
-    # Reset all on exit
-    sandbox_environments_context_var.reset(token_envs)
-    sandbox_default_context_var.reset(token_default)
-    sandbox_with_environments_context_var.reset(token_with)
 ```
 
 > **Why this matters:** Verifiers runs multiple rollouts concurrently via `asyncio.gather()`. Each coroutine has its own ContextVar context. Without setting all three ContextVars per-coroutine, only the first rollout succeeds.
 
 ---
 
-### Step 5: Environment Creation
+### Step 4: Environment Creation
 
-**Entry Point:** `loader.py:102-127`
+**Entry Point:** `loader.py`
 
 ```python
-# System prompt is already embedded in each sample's "prompt" list,
-# so we don't pass it separately to the environment
 if env_type == "single_turn":
-    return vf.SingleTurnEnv(
-        dataset=hf_dataset,
-        rubric=rubric,
-    )
+    if effective_sandbox_type:
+        return InspectSandboxEnv(
+            dataset=hf_dataset,
+            rubric=rubric,
+            sandbox_config=SandboxConfig(...),
+            task_name=task_info.name,
+            max_turns=1,
+            include_bash=include_bash,
+            include_submit=False,
+        )
+    return vf.SingleTurnEnv(dataset=hf_dataset, rubric=rubric)
 
 elif env_type == "multi_turn":
-    return vf.ToolEnv(
+    if not effective_sandbox_type:
+        raise NotImplementedError("Multi-turn requires sandbox")
+    return InspectSandboxEnv(
         dataset=hf_dataset,
         rubric=rubric,
-        tools=[],
+        sandbox_config=SandboxConfig(...),
+        task_name=task_info.name,
         max_turns=max_turns,
-    )
-
-elif env_type == "tool":
-    return vf.ToolEnv(
-        dataset=hf_dataset,
-        rubric=rubric,
-        tools=[],  # TODO: Extract tools from task
-        max_turns=max_turns,
+        include_bash=include_bash,
+        include_submit=True,  # Always for multi-turn
     )
 ```
 
-> **Note:** The system prompt is not passed to the environment because it's already included in each sample's `"prompt"` list. Verifiers uses the prompt directly when the `"prompt"` column contains a list of messages.
+### InspectSandboxEnv Lifecycle
 
-**Environment type selection:**
+`InspectSandboxEnv` extends `vf.StatefulToolEnv` and manages per-rollout sandbox lifecycle:
 
-| env_type | Verifiers Class | Use Case |
-|----------|-----------------|----------|
-| `"single_turn"` | `SingleTurnEnv` | Q&A, math, classification |
-| `"multi_turn"` | `ToolEnv` (no tools) | Conversations, reasoning chains |
-| `"tool"` | `ToolEnv` | Tasks requiring tool use |
+```
+┌─────────────────────────────────────────────────────────────────────────────┐
+│  Rollout Lifecycle                                                          │
+│                                                                             │
+│  1. setup_state(state)                                                      │
+│     └── create_sandbox_for_sample() → SandboxInstance                       │
+│     └── state["_sandbox_envs"] = instance.environments                      │
+│                                                                             │
+│  2. Rollout loop (until @vf.stop triggers)                                  │
+│     ├── Model generates response                                            │
+│     ├── If tool_calls in response:                                          │
+│     │   └── env_response() → calls _bash/_submit via update_tool_args()     │
+│     └── Check stop conditions:                                              │
+│         ├── max_turns_reached                                               │
+│         └── answer_submitted (if _submit was called)                        │
+│                                                                             │
+│  3. Scoring                                                                 │
+│     └── Scorer accesses sandbox via state["_sandbox_envs"]                  │
+│                                                                             │
+│  4. @vf.cleanup: destroy_sandbox(state)                                     │
+│     └── cleanup_sandbox(instance) → removes container/files                 │
+└─────────────────────────────────────────────────────────────────────────────┘
+```
+
+**Tools implementation:**
+
+```python
+class InspectSandboxEnv(vf.StatefulToolEnv):
+    async def _bash(self, command: str, state) -> str:
+        """Execute bash command in sandbox."""
+        sandbox = next(iter(state["_sandbox_envs"].values()))
+        result = await sandbox.exec(cmd=["bash", "-c", command])
+        return result.stdout or "(no output)"
+
+    async def _submit(self, answer: str, state) -> str:
+        """Submit answer and trigger rollout end."""
+        state["_submitted_answer"] = answer
+        return f"Answer submitted: {answer}"
+
+    @vf.stop(priority=10)
+    async def answer_submitted(self, state) -> bool:
+        """Stop when model calls submit tool."""
+        return "_submitted_answer" in state
+```
 
 ---
 
@@ -633,17 +575,19 @@ from inspect_verifiers_bridge import load_environment
 
 # This call triggers the entire flow above
 env = load_environment(
-    humaneval,                    # Step 1: Introspect task (extract solvers, scorers)
-    scoring_mode="live",          # Step 4: Use Inspect scorers
-    sandbox_type="local",         # Step 3: Create SandboxManager
+    humaneval,                    # Step 1: Introspect task
+    env_type="multi_turn",        # Step 4: Create InspectSandboxEnv
+    scoring_mode="live",          # Step 3: Use Inspect scorers
+    sandbox_type="local",         # Step 4: Configure sandbox
     max_samples=10,               # Step 2: Limit dataset
+    max_turns=5,                  # Step 4: Configure turns
 )
 
 # Result:
 # - env.dataset: HuggingFace Dataset with 10 samples
 # - env.rubric: Verifiers Rubric wrapping humaneval's verify() scorer
-# - Each sample's "prompt" contains [system_message, user_message, ...]
-#   with templates applied (prompt_template, multiple_choice, etc.)
+# - env.oai_tools: [_bash, _submit] tools in OpenAI format
+# - Each rollout gets fresh sandbox, cleaned up after scoring
 ```
 
 ---
