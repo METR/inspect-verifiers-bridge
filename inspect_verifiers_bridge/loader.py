@@ -17,6 +17,7 @@ def load_environment(
     *,
     scoring_mode: Literal["live", "custom"] = "live",
     custom_reward_fn: Callable[..., float] | None = None,
+    scorer_weights: list[float] | None = None,
     env_type: Literal["single_turn", "multi_turn"] = "single_turn",
     max_samples: int | None = None,
     max_turns: int = 10,
@@ -34,6 +35,8 @@ def load_environment(
         scoring_mode: How to handle scoring:
             - "live": Use Inspect scorers directly (requires sandbox if task uses one)
             - "custom": Use a custom reward function
+        scorer_weights: Weights for each Inspect scorer (must match number of scorers).
+            If None, all scorers are weighted equally.
         env_type: Environment type:
             - "single_turn": Single response from model
             - "multi_turn": Multi-turn with tools (requires sandbox)
@@ -75,7 +78,14 @@ def load_environment(
                 f"Task {task_info.name} has no scorers. "
                 "Use scoring_mode='custom' with a custom_reward_fn."
             )
-        rubric = scoring.build_rubric_from_scorers(task_info.scorers)
+        if scorer_weights is not None and len(scorer_weights) != len(task_info.scorers):
+            raise ValueError(
+                f"scorer_weights has {len(scorer_weights)} elements but task has "
+                f"{len(task_info.scorers)} scorers. They must match."
+            )
+        rubric = scoring.build_rubric_from_scorers(
+            task_info.scorers, weights=scorer_weights
+        )
     elif scoring_mode == "custom":
         if custom_reward_fn is None:
             raise ValueError("custom_reward_fn is required when scoring_mode='custom'")
