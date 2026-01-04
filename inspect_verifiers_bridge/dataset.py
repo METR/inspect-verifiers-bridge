@@ -203,6 +203,20 @@ def inspect_dataset_to_hf(
     for i, sample in enumerate(task.dataset):
         if max_samples is not None and i >= max_samples:
             break
+
+        # Auto-generate ID if not set (some datasets like GSM8K don't set IDs)
+        if sample.id is None:
+            sample = Sample(
+                input=sample.input,
+                target=sample.target,
+                id=str(i),
+                choices=sample.choices,
+                metadata=sample.metadata,
+                sandbox=sample.sandbox,
+                files=sample.files,
+                setup=sample.setup,
+            )
+
         rows.append(_run_async_in_thread(sample_to_row(sample, task, task_name)))
 
     return HFDataset.from_list(rows)

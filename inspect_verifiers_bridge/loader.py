@@ -17,10 +17,13 @@ def load_environment(
     *,
     scoring_mode: Literal["live", "custom"] = "live",
     custom_reward_fn: Callable[..., float] | None = None,
+    env_type: Literal["single_turn", "multi_turn"] = "single_turn",
     max_samples: int | None = None,
-    max_turns: int = 8,
+    max_turns: int = 10,
     sandbox_type: str | None = None,
     sandbox_config: str | None = None,
+    include_bash: bool = True,
+    include_submit: bool | None = None,
     **task_kwargs: Any,
 ) -> vf.Environment:
     """
@@ -31,16 +34,26 @@ def load_environment(
         scoring_mode: How to handle scoring:
             - "live": Use Inspect scorers directly (requires sandbox if task uses one)
             - "custom": Use a custom reward function
+        env_type: Environment type:
+            - "single_turn": Single response from model
+            - "multi_turn": Multi-turn with tools (requires sandbox)
         max_samples: Limit number of samples from dataset
-        max_turns: Max turns for sandbox environments
+        max_turns: Max turns for multi-turn environments (default: 10)
         sandbox_type: Override sandbox type (e.g., "docker", "local")
         sandbox_config: Sandbox configuration file path
+        include_bash: Include bash tool in sandbox environments (default: True)
+        include_submit: Include submit tool for multi-turn termination
+            (default: auto, True if env_type="multi_turn")
         **task_kwargs: Arguments to pass to the Inspect task function
 
     Returns:
         A Verifiers Environment ready for training.
-        - InspectSandboxEnv if task uses sandboxes (per-rollout sandbox lifecycle)
-        - SingleTurnEnv for non-sandbox tasks
+
+    Environment selection:
+        - single_turn + no sandbox → SingleTurnEnv
+        - single_turn + sandbox → InspectSandboxEnv(max_turns=1)
+        - multi_turn + no sandbox → NotImplementedError
+        - multi_turn + sandbox → InspectSandboxEnv(max_turns=N, submit tool)
     """
     # Load and introspect the task
     task_info = tasks.load_inspect_task(task, **task_kwargs)
@@ -70,8 +83,31 @@ def load_environment(
     else:
         raise ValueError(f"Unknown scoring_mode: {scoring_mode}")
 
-    # Use InspectSandboxEnv for sandbox tasks, SingleTurnEnv otherwise
-    if effective_sandbox_type:
+    # Environment selection based on env_type and sandbox
+    if env_type == "single_turn":
+        if effective_sandbox_type:
+            from inspect_verifiers_bridge.environment import InspectSandboxEnv
+
+            return InspectSandboxEnv(
+                dataset=hf_dataset,
+                rubric=rubric,
+                sandbox_config=SandboxConfig(
+                    sandbox_type=effective_sandbox_type,
+                    config=sandbox_config,
+                ),
+                task_name=task_info.name,
+                max_turns=1,
+                include_bash=include_bash,
+                include_submit=False,  # No submit for single turn
+            )
+        return vf.SingleTurnEnv(dataset=hf_dataset, rubric=rubric)
+
+    elif env_type == "multi_turn":
+        if not effective_sandbox_type:
+            raise NotImplementedError(
+                "Multi-turn environment requires a sandbox. "
+                "Either use a task with sandbox configuration or specify sandbox_type."
+            )
         from inspect_verifiers_bridge.environment import InspectSandboxEnv
 
         return InspectSandboxEnv(
@@ -83,6 +119,9 @@ def load_environment(
             ),
             task_name=task_info.name,
             max_turns=max_turns,
+            include_bash=include_bash,
+            include_submit=include_submit if include_submit is not None else True,
         )
 
-    return vf.SingleTurnEnv(dataset=hf_dataset, rubric=rubric)
+    else:
+        raise ValueError(f"Unknown env_type: {env_type}")

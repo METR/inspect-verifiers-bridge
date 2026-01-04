@@ -2,9 +2,10 @@
 Custom environment that integrates Inspect sandboxes with Verifiers lifecycle.
 
 Creates a fresh sandbox per rollout, destroyed after scoring completes.
+Supports configurable tools (bash, submit) for interactive tasks.
 """
 
-from typing import Any
+from typing import Any, Callable
 
 import verifiers as vf
 from datasets import Dataset as HFDataset
@@ -17,12 +18,16 @@ from inspect_verifiers_bridge.sandbox import (
 )
 
 
-class InspectSandboxEnv(vf.MultiTurnEnv):
+class InspectSandboxEnv(vf.StatefulToolEnv):
     """
     Verifiers environment with per-rollout Inspect sandbox lifecycle.
 
     Creates a fresh sandbox for each rollout in setup_state,
     destroys it in @vf.cleanup after scoring completes.
+
+    Supports configurable tools:
+    - bash: Execute commands in the sandbox (default: enabled)
+    - submit: Submit final answer to end multi-turn rollout (auto-enabled for max_turns > 1)
 
     The sandbox is made available to scorers via state["_sandbox_envs"]
     which is picked up by reward_from_inspect_scorer.
@@ -34,12 +39,30 @@ class InspectSandboxEnv(vf.MultiTurnEnv):
         rubric: vf.Rubric,
         sandbox_config: SandboxConfig,
         task_name: str,
-        max_turns: int,
+        max_turns: int = 1,
+        tools: list[Callable[..., Any]] | None = None,
+        include_bash: bool = True,
+        include_submit: bool | None = None,
         **kwargs: Any,
     ):
+        """
+        Initialize the environment.
+
+        Args:
+            dataset: HuggingFace dataset with prompts
+            rubric: Verifiers rubric for scoring
+            sandbox_config: Configuration for sandbox creation
+            task_name: Name of the Inspect task
+            max_turns: Maximum conversation turns (1 for single-turn)
+            tools: Optional list of additional tool functions
+            include_bash: Whether to include bash tool (default: True)
+            include_submit: Whether to include submit tool (default: auto, True if max_turns > 1)
+            **kwargs: Additional arguments passed to StatefulToolEnv
+        """
         super().__init__(
             dataset=dataset,
             rubric=rubric,
+            tools=tools or [],
             max_turns=max_turns,
             **kwargs,
         )
@@ -47,19 +70,61 @@ class InspectSandboxEnv(vf.MultiTurnEnv):
         self.task_name = task_name
         self._active_instances: dict[int, SandboxInstance] = {}
 
-    async def env_response(
+        # Add bash tool if requested
+        if include_bash:
+            self.add_tool(self._bash, args_to_skip=["state"])
+
+        # Add submit tool for multi-turn (auto-enable if max_turns > 1)
+        if include_submit or (include_submit is None and max_turns > 1):
+            self.add_tool(self._submit, args_to_skip=["state"])
+
+    # === Tools ===
+    # Note: state is typed as str but actually receives dict from update_tool_args.
+    # This is because args_to_skip removes it from schema, but pydantic still validates
+    # the signature. Using dict[str, Any] fails strict JSON schema validation.
+
+    async def _bash(self, command: str, state: str = "") -> str:  # type: ignore[assignment]
+        """Execute a bash command in the sandbox."""
+        state_dict: dict[str, Any] = state  # type: ignore[assignment]
+        sandbox_envs = state_dict.get("_sandbox_envs")
+        if not sandbox_envs:
+            return "Error: No sandbox available"
+        sandbox = next(iter(sandbox_envs.values()))
+        result = await sandbox.exec(cmd=["bash", "-c", command], timeout=30)
+        output = result.stdout
+        if result.stderr:
+            output = f"{output}\nstderr: {result.stderr}"
+        return output or "(no output)"
+
+    async def _submit(self, answer: str, state: str = "") -> str:  # type: ignore[assignment]
+        """Submit your final answer to complete the task."""
+        state_dict: dict[str, Any] = state  # type: ignore[assignment]
+        state_dict["_submitted_answer"] = answer
+        return f"Answer submitted: {answer}"
+
+    # === StatefulToolEnv abstract method ===
+
+    def update_tool_args(
         self,
+        tool_name: str,
+        tool_args: dict[str, Any],
         messages: vf.Messages,
         state: vf.State,
         **kwargs: Any,
-    ) -> vf.Messages:
-        """
-        Return environment response after model's turn.
+    ) -> dict[str, Any]:
+        """Inject state into tool calls."""
+        if tool_name in ("_bash", "_submit"):
+            return {**tool_args, "state": state}
+        return tool_args
 
-        For basic sandbox environments without tools, we return empty list
-        (no environment interaction needed - just scoring).
-        """
-        return []
+    # === Stop Conditions ===
+
+    @vf.stop(priority=10)
+    async def answer_submitted(self, state: vf.State) -> bool:
+        """Stop when model calls submit tool."""
+        return "_submitted_answer" in state
+
+    # === Lifecycle ===
 
     async def setup_state(self, state: vf.State) -> vf.State:
         """Create per-rollout sandbox."""
@@ -72,7 +137,7 @@ class InspectSandboxEnv(vf.MultiTurnEnv):
             sandbox_config=self.sandbox_config,
         )
 
-        # Store in state for scoring
+        # Store in state for scoring and tools
         state["_sandbox_instance"] = instance
         state["_sandbox_envs"] = instance.environments
 
