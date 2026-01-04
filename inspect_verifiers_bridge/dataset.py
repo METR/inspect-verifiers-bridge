@@ -26,6 +26,7 @@ async def sample_to_row(
     sample: Sample,
     task: Task,
     task_name: str,
+    additional_system_content: str | None = None,
 ) -> dict[str, Any]:
     """
     Convert an Inspect Sample to a Verifiers-compatible dataset row.
@@ -36,6 +37,7 @@ async def sample_to_row(
         sample: An Inspect Sample object
         task: The Inspect Task (contains solver chain)
         task_name: Name of the task (for tracking)
+        additional_system_content: Optional content to append to the system message
 
     Returns:
         Dictionary with prompt, answer, info, and id fields
@@ -43,6 +45,12 @@ async def sample_to_row(
     # Get ground truth messages from solver pipeline
     messages = await get_ground_truth_messages(task, sample)
     prompt_messages = [_chat_message_to_dict(msg) for msg in messages]
+
+    # Append additional content to system message if provided
+    if additional_system_content:
+        prompt_messages = _append_to_system_message(
+            prompt_messages, additional_system_content
+        )
 
     # Convert target to string answer
     answer = _target_to_text(sample.target)
@@ -134,6 +142,33 @@ def _chat_message_to_dict(msg: ChatMessage) -> dict[str, Any]:
             return result
 
 
+def _append_to_system_message(
+    messages: list[dict[str, Any]], content: str
+) -> list[dict[str, Any]]:
+    """
+    Append content to the system message, or create one if it doesn't exist.
+
+    Args:
+        messages: List of message dicts
+        content: Content to append to system message
+
+    Returns:
+        Updated message list with appended system content
+    """
+    # Find existing system message
+    for i, msg in enumerate(messages):
+        if msg.get("role") == "system":
+            # Append to existing system message
+            existing = msg.get("content", "")
+            separator = "\n\n" if existing else ""
+            updated_msg = {**msg, "content": f"{existing}{separator}{content}"}
+            return messages[:i] + [updated_msg] + messages[i + 1 :]
+
+    # No system message found - create one at the beginning
+    system_msg = {"role": "system", "content": content}
+    return [system_msg] + messages
+
+
 def _target_to_text(target: Any) -> str | None:
     """Convert an Inspect target to a text string."""
     if target is None:
@@ -187,6 +222,7 @@ def inspect_dataset_to_hf(
     task: Task,
     task_name: str,
     max_samples: int | None = None,
+    additional_system_content: str | None = None,
 ) -> HFDataset:
     """
     Convert an Inspect dataset to a HuggingFace Dataset using ground truth.
@@ -195,6 +231,8 @@ def inspect_dataset_to_hf(
         task: The Inspect Task (contains dataset and solver chain)
         task_name: Name of the task
         max_samples: Optional limit on number of samples to convert
+        additional_system_content: Optional content to append to system messages
+            (e.g., instructions for using tools)
 
     Returns:
         A HuggingFace Dataset compatible with Verifiers
@@ -217,6 +255,10 @@ def inspect_dataset_to_hf(
                 setup=sample.setup,
             )
 
-        rows.append(_run_async_in_thread(sample_to_row(sample, task, task_name)))
+        rows.append(
+            _run_async_in_thread(
+                sample_to_row(sample, task, task_name, additional_system_content)
+            )
+        )
 
     return HFDataset.from_list(rows)

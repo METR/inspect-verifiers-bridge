@@ -25,6 +25,8 @@ def load_environment(
     sandbox_config: str | None = None,
     include_bash: bool = True,
     include_submit: bool | None = None,
+    submit_instruction: str
+    | None = "You are given tools to complete this task. You must call _submit with your final answer to complete the task.",
     **task_kwargs: Any,
 ) -> vf.Environment:
     """
@@ -47,6 +49,10 @@ def load_environment(
         include_bash: Include bash tool in sandbox environments (default: True)
         include_submit: Include submit tool for multi-turn termination
             (default: auto, True if env_type="multi_turn")
+        submit_instruction: Instruction appended to system prompt for multi-turn
+            environments explaining how to use the _submit tool.
+            - str: Use custom instruction
+            - None: No instruction added
         **task_kwargs: Arguments to pass to the Inspect task function
 
     Returns:
@@ -61,11 +67,18 @@ def load_environment(
     # Load and introspect the task
     task_info = tasks.load_inspect_task(task, **task_kwargs)
 
-    # Convert dataset using ground truth solver execution
+    # Determine if submit tool will be enabled
+    will_include_submit = (
+        include_submit if include_submit is not None else (env_type == "multi_turn")
+    )
+
     hf_dataset = ds.inspect_dataset_to_hf(
         task_info.task,
         task_name=task_info.name,
         max_samples=max_samples,
+        additional_system_content=submit_instruction
+        if will_include_submit and submit_instruction is not None
+        else None,
     )
 
     # Determine if we need a sandbox

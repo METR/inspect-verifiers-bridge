@@ -114,7 +114,7 @@ class InspectSandboxEnv(vf.StatefulToolEnv):
         state_dict["_submitted_answer"] = answer
         return f"Answer submitted: {answer}"
 
-    # === StatefulToolEnv abstract method ===
+    # === StatefulToolEnv overrides ===
 
     def update_tool_args(
         self,
@@ -129,12 +129,66 @@ class InspectSandboxEnv(vf.StatefulToolEnv):
             return {**tool_args, "state": state}
         return tool_args
 
+    async def env_response(
+        self,
+        messages: vf.Messages,
+        state: vf.State,
+        **kwargs: Any,
+    ) -> vf.Messages:
+        """
+        Generate environment response to model's tool calls.
+
+        Handles two special cases:
+        1. Model responds without tools (multi-turn mode) - return empty list
+        2. Model calls _submit - set final_env_response to prevent extra model call
+        """
+        assert isinstance(messages, list)
+        last_message = messages[-1]
+
+        # If no tool calls, return empty list (no-op turn)
+        if "tool_calls" not in last_message or last_message["tool_calls"] is None:
+            return []
+
+        # Call parent to execute tools
+        response = await super().env_response(messages, state, **kwargs)
+
+        # If _submit was called, mark this as final response to prevent wasted model call
+        # See: https://docs.primeintellect.ai/verifiers/source/environments#final-environment-responses
+        if "_submitted_answer" in state:
+            state["final_env_response"] = response
+
+        return response
+
     # === Stop Conditions ===
 
     @vf.stop(priority=10)
     async def answer_submitted(self, state: vf.State) -> bool:
         """Stop when model calls submit tool."""
         return "_submitted_answer" in state
+
+    @vf.stop(priority=0)
+    async def no_tools_called(self, state: vf.State) -> bool:
+        """
+        Override ToolEnv's no_tools_called to allow multi-turn without tool use.
+
+        In single-turn mode (max_turns=1), we keep the default behavior: stop if
+        the model doesn't call tools.
+
+        In multi-turn mode (max_turns>1), we disable this stop condition so the
+        model must either call _submit or reach max_turns to end the rollout.
+        """
+        if self.max_turns > 1:
+            # Multi-turn: don't stop just because no tools were called
+            return False
+        # Single-turn: use default ToolEnv behavior
+        if len(state["trajectory"]) == 0:
+            return False
+        last_message = state["trajectory"][-1]["completion"][-1]
+        is_assistant = last_message["role"] == "assistant"
+        no_tool_calls = (
+            "tool_calls" not in last_message or last_message["tool_calls"] is None
+        )
+        return is_assistant and no_tool_calls
 
     # === Lifecycle ===
 
