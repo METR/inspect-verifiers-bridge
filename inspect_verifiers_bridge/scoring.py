@@ -26,28 +26,22 @@ from inspect_verifiers_bridge.sandbox import sandbox_context
 from inspect_verifiers_bridge.utils import BRIDGE_MODEL_NAME
 
 
-async def reward_from_inspect_scorer(
+async def run_inspect_scorer(
     prompt: list[dict[str, Any]],
     completion: list[dict[str, Any]],
     answer: str | None,
     state: dict[str, Any],
     *,
     scorer: Scorer,
-    cache_key: str | None = None,
-) -> float:
+) -> Score | None:
     """
-    Verifiers reward function that wraps an Inspect scorer.
+    Run an Inspect scorer and return the full Score object.
 
-    This function reconstructs a minimal TaskState from Verifiers state
-    and calls the Inspect scorer to get a reward.
+    This is the core scoring function that builds a TaskState from Verifiers state
+    and calls the Inspect scorer. Returns the full Score object with value, answer,
+    explanation, and metadata.
 
-    Sandbox context is obtained from state["_sandbox_envs"] if present
-    (set by InspectSandboxEnv.setup_state).
-
-    If cache_key is provided and state["_cached_scores"] contains that key,
-    returns the cached value instead of re-computing. This is used by
-    InspectSandboxEnv which pre-computes scores in post_rollout() before
-    the sandbox is destroyed.
+    For just the float reward value, use reward_from_inspect_scorer instead.
 
     Args:
         prompt: The prompt messages (from Verifiers)
@@ -55,16 +49,10 @@ async def reward_from_inspect_scorer(
         answer: The expected answer (from Verifiers dataset)
         state: The Verifiers state dict containing info and optional sandbox
         scorer: The Inspect scorer to use
-        cache_key: Optional key to look up in state["_cached_scores"]
 
     Returns:
-        Float reward value (typically 0.0-1.0)
+        Score object with full details, or None if scorer returned None
     """
-    # Check for cached score first (set by InspectSandboxEnv.post_rollout)
-    if cache_key is not None:
-        cached_scores = state.get("_cached_scores", {})
-        if cache_key in cached_scores:
-            return cached_scores[cache_key]
     info = state.get("info", {})
 
     # Assert expected keys are present in info and have valid values
@@ -105,7 +93,9 @@ async def reward_from_inspect_scorer(
     # Build TaskState
     # Deserialize metadata from JSON string (serialized in dataset.py for pyarrow compatibility)
     metadata_raw = info["inspect_metadata"]
-    metadata = json.loads(metadata_raw) if isinstance(metadata_raw, str) else metadata_raw
+    metadata = (
+        json.loads(metadata_raw) if isinstance(metadata_raw, str) else metadata_raw
+    )
     task_state = TaskState(
         model=BRIDGE_MODEL_NAME,
         sample_id=sample_id,
@@ -126,6 +116,58 @@ async def reward_from_inspect_scorer(
     else:
         # Call scorer without sandbox context
         score = await scorer(task_state, target)
+
+    return score
+
+
+async def reward_from_inspect_scorer(
+    prompt: list[dict[str, Any]],
+    completion: list[dict[str, Any]],
+    answer: str | None,
+    state: dict[str, Any],
+    *,
+    scorer: Scorer,
+    cache_key: str | None = None,
+) -> float:
+    """
+    Verifiers reward function that wraps an Inspect scorer.
+
+    This function reconstructs a minimal TaskState from Verifiers state
+    and calls the Inspect scorer to get a reward.
+
+    Sandbox context is obtained from state["_sandbox_envs"] if present
+    (set by InspectSandboxEnv.setup_state).
+
+    If cache_key is provided and state["_cached_scores"] contains that key,
+    returns the cached value instead of re-computing. This is used by
+    InspectSandboxEnv which pre-computes scores in post_rollout() before
+    the sandbox is destroyed.
+
+    Args:
+        prompt: The prompt messages (from Verifiers)
+        completion: The completion messages (from Verifiers)
+        answer: The expected answer (from Verifiers dataset)
+        state: The Verifiers state dict containing info and optional sandbox
+        scorer: The Inspect scorer to use
+        cache_key: Optional key to look up in state["_cached_scores"]
+
+    Returns:
+        Float reward value (typically 0.0-1.0)
+    """
+    # Check for cached score first (set by InspectSandboxEnv.post_rollout)
+    if cache_key is not None:
+        cached_scores = state.get("_cached_scores", {})
+        if cache_key in cached_scores:
+            return cached_scores[cache_key]
+
+    # Run the scorer
+    score = await run_inspect_scorer(
+        prompt=prompt,
+        completion=completion,
+        answer=answer,
+        state=state,
+        scorer=scorer,
+    )
 
     if score is None:
         warnings.warn(

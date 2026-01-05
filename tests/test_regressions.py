@@ -500,3 +500,53 @@ def add(a, b):
 
         # All should succeed (not just the first one)
         assert all(r == 1.0 for r in results), f"Expected all 1.0, got {results}"
+
+
+class TestScoreDetailsCaching:
+    """
+    Tests for full Score details caching (value, answer, explanation, metadata).
+
+    This ensures that InspectSandboxEnv captures and exposes all Score information
+    for logging and custom reward functions, not just the float value.
+    """
+
+    @pytest.mark.asyncio
+    async def test_run_inspect_scorer_returns_full_score(self) -> None:
+        """Test that run_inspect_scorer returns the full Score object."""
+        from inspect_verifiers_bridge.scoring import run_inspect_scorer
+
+        # Create a custom scorer that returns rich Score data
+        @scorer(metrics=[])
+        def rich_scorer() -> Scorer:
+            async def score(state: TaskState, target: Target) -> Score:
+                return Score(
+                    value=CORRECT,
+                    answer="extracted",
+                    explanation="because reasons",
+                    metadata={"custom": "data"},
+                )
+
+            return score
+
+        # Minimal state for scoring
+        state: dict[str, Any] = {
+            "info": {
+                "inspect_target_raw": "expected",
+                "inspect_sample_id": "test-1",
+                "inspect_metadata": "{}",
+                "inspect_input_raw": "What is 1+1?",
+            },
+        }
+
+        result = await run_inspect_scorer(
+            prompt=[{"role": "user", "content": "What is 1+1?"}],
+            completion=[{"role": "assistant", "content": "2"}],
+            answer="2",
+            state=state,
+            scorer=rich_scorer(),
+        )
+
+        assert result is not None
+        assert result.answer == "extracted"
+        assert result.explanation == "because reasons"
+        assert result.metadata == {"custom": "data"}

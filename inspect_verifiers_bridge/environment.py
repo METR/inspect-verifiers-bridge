@@ -21,6 +21,11 @@ from inspect_verifiers_bridge.sandbox import (
     cleanup_sandbox,
     create_sandbox_for_sample,
 )
+from inspect_verifiers_bridge.scoring import (
+    _get_scorer_name,
+    _score_to_float,
+    run_inspect_scorer,
+)
 
 
 class InspectSandboxEnv(vf.StatefulToolEnv):
@@ -218,17 +223,13 @@ class InspectSandboxEnv(vf.StatefulToolEnv):
         Run Inspect scorers and cache results BEFORE sandbox is destroyed.
 
         Verifiers calls cleanup before scoring, so we must compute scores here
-        while the sandbox is still alive. Results are cached in state["_cached_scores"]
-        and the rubric reward functions will return these cached values.
+        while the sandbox is still alive. Results are cached in:
+        - state["_cached_scores"]: float values for the rubric reward functions
+        - state["_score_details"]: full Score info (value, answer, explanation, metadata)
+          for logging and custom reward functions
         """
         if not self.scorers:
             return
-
-        # Import here to avoid circular dependency
-        from inspect_verifiers_bridge.scoring import (
-            _get_scorer_name,
-            reward_from_inspect_scorer,
-        )
 
         sandbox_envs = state.get("_sandbox_envs")
         if sandbox_envs is None:
@@ -241,24 +242,50 @@ class InspectSandboxEnv(vf.StatefulToolEnv):
 
         # Cache scores for each scorer
         cached_scores: dict[str, float] = {}
+        score_details: dict[str, dict[str, Any]] = {}
+
         for i, scorer in enumerate(self.scorers):
             scorer_name = _get_scorer_name(scorer)
             cache_key = f"inspect_{scorer_name}_{i}"
             try:
-                score = await reward_from_inspect_scorer(
+                score = await run_inspect_scorer(
                     prompt=prompt,
                     completion=completion,
                     answer=answer,
                     state=state,
                     scorer=scorer,
                 )
-                cached_scores[cache_key] = score
+                if score is not None:
+                    value = _score_to_float(score)
+                    cached_scores[cache_key] = value
+                    score_details[cache_key] = {
+                        "value": value,
+                        "answer": score.answer,
+                        "explanation": score.explanation,
+                        "metadata": score.metadata or {},
+                    }
+                else:
+                    # Scorer returned None - use default values
+                    cached_scores[cache_key] = 0.0
+                    score_details[cache_key] = {
+                        "value": 0.0,
+                        "answer": None,
+                        "explanation": "Scorer returned None",
+                        "metadata": {},
+                    }
             except Exception as e:
                 # Log error but continue with other scorers
                 self.logger.error(f"Error in post_rollout scoring for {cache_key}: {e}")
                 cached_scores[cache_key] = 0.0
+                score_details[cache_key] = {
+                    "value": 0.0,
+                    "answer": None,
+                    "explanation": f"Error during scoring: {e}",
+                    "metadata": {"error": str(e)},
+                }
 
         state["_cached_scores"] = cached_scores
+        state["_score_details"] = score_details
 
     @vf.cleanup
     async def destroy_sandbox(self, state: vf.State) -> None:
