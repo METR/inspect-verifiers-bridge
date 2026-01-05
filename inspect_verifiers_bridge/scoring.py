@@ -233,7 +233,18 @@ def _score_to_float(score: Score) -> float:
 
 
 def _get_scorer_name(scorer: Scorer) -> str:
-    # Add __name__ attribute to partial function for Verifiers compatibility
+    # First try to get the name from Inspect's registry (works for @scorer decorated functions
+    # and inspect_scout scanners converted via as_scorer)
+    try:
+        from inspect_ai._util.registry import registry_info
+
+        info = registry_info(scorer)
+        # Strip package prefix if present (e.g., "my_package/scorer_name" -> "scorer_name")
+        return info.name.split("/")[-1]
+    except (ValueError, AttributeError):
+        pass  # Not a registered scorer, fall back to qualname
+
+    # Fall back to extracting from __qualname__ for non-registry scorers
     # Use __qualname__ to get unique names (e.g., "expression_exact_match.<locals>.score")
     # Extract the parent function name from qualname, or fall back to __name__ or class name
     qualname = getattr(scorer, "__qualname__", "")

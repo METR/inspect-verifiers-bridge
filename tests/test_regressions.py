@@ -213,6 +213,59 @@ class TestScorerNaming:
         assert "exact" in name.lower() or "score" in name.lower()
         assert "_0" in name
 
+    def test_scorer_name_from_registry_info(self) -> None:
+        """
+        Regression test for inspect_scout scanner naming.
+
+        Bug: When inspect_scout converts a scanner to a scorer via as_scorer(),
+        the scorer's __qualname__ is "as_scorer.<locals>.score" which results in
+        names like "inspect_as_scorer_0" instead of the actual scanner name.
+
+        Fix: Check __registry_info__.name first (where the scanner name is stored)
+        before falling back to __qualname__ extraction.
+        """
+        from inspect_ai._util.registry import RegistryInfo
+
+        from inspect_verifiers_bridge.scoring import _get_scorer_name
+
+        # Create a mock scorer that mimics what inspect_scout's as_scorer creates:
+        # - __qualname__ is "as_scorer.<locals>.score" (wrong name)
+        # - __registry_info__.name contains the actual scanner name
+        async def mock_score(state: TaskState, target: Target) -> Score:
+            return Score(value=CORRECT)
+
+        # Simulate the qualname that as_scorer creates
+        mock_score.__qualname__ = "as_scorer.<locals>.score"
+
+        # Simulate what @scorer(name="ctf_environment") does - stores name in registry info
+        mock_score.__registry_info__ = RegistryInfo(  # type: ignore[attr-defined]
+            type="scorer",
+            name="ctf_environment",
+            metadata={},
+        )
+
+        # Should extract "ctf_environment" from registry info, not "as_scorer" from qualname
+        assert _get_scorer_name(mock_score) == "ctf_environment"
+
+    def test_scorer_name_strips_package_prefix(self) -> None:
+        """Test that package prefixes are stripped from registry names."""
+        from inspect_ai._util.registry import RegistryInfo
+
+        from inspect_verifiers_bridge.scoring import _get_scorer_name
+
+        async def mock_score(state: TaskState, target: Target) -> Score:
+            return Score(value=CORRECT)
+
+        # Registry names can include package prefixes like "my_package/scanner_name"
+        mock_score.__registry_info__ = RegistryInfo(  # type: ignore[attr-defined]
+            type="scorer",
+            name="inspect_scout/ctf_scanner",
+            metadata={},
+        )
+
+        # Should strip the package prefix and return just "ctf_scanner"
+        assert _get_scorer_name(mock_score) == "ctf_scanner"
+
 
 class MockSandbox(SandboxEnvironment):
     """Mock sandbox for testing."""
