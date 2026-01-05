@@ -1149,7 +1149,7 @@ requires-dist = [
     { name = "datasets", specifier = ">=3.1.0" },
     { name = "inspect-ai", specifier = "~=0.3.158" },
     { name = "inspect-evals", specifier = ">=0.3.102" },
-    { name = "verifiers", specifier = ">=0.1.8.post1" },
+    { name = "verifiers", specifier = ">=0.1.8.post2" },
 ]
 
 [package.metadata.requires-dev]
@@ -3426,7 +3426,7 @@ wheels = [
 
 [[package]]
 name = "verifiers"
-version = "0.1.8.post1"
+version = "0.1.8.post2"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "datasets" },
@@ -3438,14 +3438,15 @@ dependencies = [
     { name = "pydantic" },
     { name = "requests" },
     { name = "rich" },
+    { name = "tenacity" },
     { name = "textual" },
     { name = "tomli", marker = "python_full_version < '3.11'" },
     { name = "typing-extensions", marker = "python_full_version < '3.12'" },
     { name = "wget" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/d5/8f/8ab2a095cdc7db4cbbb8b21c8bb208aa7043cc6dfc99b65f24fd235f8bfd/verifiers-0.1.8.post1.tar.gz", hash = "sha256:8be547ecfdac8464128798b083601ca576061a3bdf522920c57dc0dc71ae649f", size = 117959, upload-time = "2025-11-26T07:50:29.426Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/74/89/41112d19ec1a51fc8de3badf3861df712104effb592a1f198ef6d0d04bf5/verifiers-0.1.8.post2.tar.gz", hash = "sha256:d3fb7171117acffc20e2fa9dcfb92c6126bf959d9912bccae264944b61f8696d", size = 119274, upload-time = "2025-12-11T03:20:44.113Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/a8/0a/38a238f53de3aedd46a4cf36f06e8bce9a68e314d4b61ab6c7b8acd03dca/verifiers-0.1.8.post1-py3-none-any.whl", hash = "sha256:8ea9e536f3c1a40f28f000bc7196a84afd5d51bb497aae1262ab7852ccc19f9d", size = 106975, upload-time = "2025-11-26T07:50:28.157Z" },
+    { url = "https://files.pythonhosted.org/packages/d7/41/5e9ad71973cd6b07a96f439bc6f6bac19cc33ce948fddb6a535162fe8984/verifiers-0.1.8.post2-py3-none-any.whl", hash = "sha256:94bef653b152cf7a58ccfed1d553cee0fe119454d017964f6311dd81df36a82a", size = 108061, upload-time = "2025-12-11T03:20:42.689Z" },
 ]
 
 [[package]]
