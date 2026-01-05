@@ -103,6 +103,9 @@ async def reward_from_inspect_scorer(
         original_input = _build_inspect_messages(input_raw, [])
 
     # Build TaskState
+    # Deserialize metadata from JSON string (serialized in dataset.py for pyarrow compatibility)
+    metadata_raw = info["inspect_metadata"]
+    metadata = json.loads(metadata_raw) if isinstance(metadata_raw, str) else metadata_raw
     task_state = TaskState(
         model=BRIDGE_MODEL_NAME,
         sample_id=sample_id,
@@ -111,7 +114,7 @@ async def reward_from_inspect_scorer(
         messages=messages,
         target=target,
         output=model_output,
-        metadata=info["inspect_metadata"],
+        metadata=metadata,
     )
 
     # Get sandbox from state if available (set by InspectSandboxEnv.setup_state)

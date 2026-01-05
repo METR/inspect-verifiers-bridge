@@ -7,6 +7,7 @@ These tests verify that:
 3. Ground truth solver execution produces correct prompts
 """
 
+import json
 from typing import Any
 
 from inspect_verifiers_bridge.tasks import load_inspect_task
@@ -61,7 +62,12 @@ class TestDatasetConversion:
             assert row["prompt"][1]["content"] == inspect_sample.input  # Raw input
             assert row["answer"] == inspect_sample.target
             assert row["info"]["inspect_sample_id"] == inspect_sample.id
-            assert row["info"]["inspect_metadata"] == inspect_sample.metadata
+            stored_metadata = (
+                json.loads(row["info"]["inspect_metadata"])
+                if isinstance(row["info"]["inspect_metadata"], str)
+                else row["info"]["inspect_metadata"]
+            )
+            assert stored_metadata == (inspect_sample.metadata or {})
 
     def test_simple_math_with_prompt_template_dataset(self) -> None:
         """Test task with prompt_template - template should format user input."""
@@ -91,7 +97,12 @@ class TestDatasetConversion:
             assert row["prompt"][1]["content"] == expected_user_content
             assert row["answer"] == inspect_sample.target
             assert row["info"]["inspect_sample_id"] == inspect_sample.id
-            assert row["info"]["inspect_metadata"] == inspect_sample.metadata
+            stored_metadata = (
+                json.loads(row["info"]["inspect_metadata"])
+                if isinstance(row["info"]["inspect_metadata"], str)
+                else row["info"]["inspect_metadata"]
+            )
+            assert stored_metadata == (inspect_sample.metadata or {})
 
     def test_multiple_choice_dataset(self) -> None:
         """Test multiple choice task preserves choices and formats prompt correctly."""
@@ -156,7 +167,13 @@ class TestDatasetConversion:
 
         for hf_row, inspect_sample in zip(hf_dataset, task_info.dataset):
             row = _row(hf_row)
-            stored_metadata = row["info"]["inspect_metadata"]
+            # Metadata is JSON-serialized for pyarrow compatibility
+            stored_metadata_raw = row["info"]["inspect_metadata"]
+            stored_metadata = (
+                json.loads(stored_metadata_raw)
+                if isinstance(stored_metadata_raw, str)
+                else stored_metadata_raw
+            )
             original_metadata = inspect_sample.metadata or {}
 
             for key, value in original_metadata.items():
@@ -187,7 +204,12 @@ class TestDatasetConversion:
             assert len(row["prompt"]) > 0
 
             # Metadata should indicate tool calls
-            assert row["info"]["inspect_metadata"]["has_tool_calls"] is True
+            metadata = (
+                json.loads(row["info"]["inspect_metadata"])
+                if isinstance(row["info"]["inspect_metadata"], str)
+                else row["info"]["inspect_metadata"]
+            )
+            assert metadata["has_tool_calls"] is True
 
     def test_tool_call_preserves_tool_structure(self) -> None:
         """Test that tool call messages preserve tool_calls, tool_call_id, and name."""
@@ -253,7 +275,12 @@ class TestDatasetConversion:
 
         # Second sample has multiple turns
         second_row = _row(hf_dataset[1])
-        assert second_row["info"]["inspect_metadata"]["turn_count"] == 5
+        second_metadata = (
+            json.loads(second_row["info"]["inspect_metadata"])
+            if isinstance(second_row["info"]["inspect_metadata"], str)
+            else second_row["info"]["inspect_metadata"]
+        )
+        assert second_metadata["turn_count"] == 5
 
         # Should have alternating user/assistant messages
         assert isinstance(second_row["prompt"], list)

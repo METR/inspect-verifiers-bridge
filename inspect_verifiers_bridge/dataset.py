@@ -5,6 +5,7 @@ Uses ground truth solver execution for accurate prompt construction.
 """
 
 import asyncio
+import json
 import warnings
 from typing import Any
 
@@ -63,12 +64,14 @@ async def sample_to_row(
         input_raw = [_chat_message_to_dict(msg) for msg in sample.input]
 
     # Store all Inspect-specific data in info for later use
+    # Note: inspect_metadata is serialized to JSON string because pyarrow
+    # can't handle dicts with varying schemas across samples
     info: dict[str, Any] = {
         "inspect_sample_id": sample.id,
         "inspect_input_raw": input_raw,
         "inspect_target_raw": sample.target,
         "inspect_choices": sample.choices,
-        "inspect_metadata": sample.metadata or {},
+        "inspect_metadata": json.dumps(sample.metadata or {}),
         "inspect_sandbox": sample.sandbox,
         "inspect_files": sample.files,
         "inspect_setup": sample.setup,

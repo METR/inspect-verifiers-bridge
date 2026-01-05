@@ -5,6 +5,7 @@ This module provides utilities to create and manage sandbox environments
 that can be used during reward computation in RL training.
 """
 
+import json
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from typing import Any, AsyncIterator
@@ -105,9 +106,13 @@ async def create_sandbox_for_sample(
     if setup:
         setup_bytes = await read_sandboxenv_file(setup)
 
-    # Get metadata
+    # Get metadata (JSON-serialized in dataset.py for pyarrow compatibility)
     metadata_raw = sample_info.get("inspect_metadata") or {}
-    metadata: dict[str, Any] = dict(metadata_raw)
+    metadata: dict[str, Any] = (
+        json.loads(metadata_raw)
+        if isinstance(metadata_raw, str)
+        else dict(metadata_raw)
+    )
 
     # Initialize sandbox environments
     sandboxes = await init_sandbox_environments_sample(
