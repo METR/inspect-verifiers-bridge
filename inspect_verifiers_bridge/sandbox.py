@@ -6,6 +6,7 @@ that can be used during reward computation in RL training.
 """
 
 import json
+import logging
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from typing import Any, AsyncIterator
@@ -22,6 +23,8 @@ from inspect_ai.util._sandbox.context import (
 from inspect_ai.util._sandbox.environment import SandboxEnvironment
 from inspect_ai.util._sandbox.registry import registry_find_sandboxenv
 
+logger = logging.getLogger(__name__)
+
 # Track whether Docker context has been initialized
 _docker_context_initialized = False
 
@@ -34,13 +37,15 @@ def _ensure_docker_context() -> None:
 
     try:
         # Import and initialize Docker cleanup context
+        logger.debug("Initializing Docker sandbox context")
         from inspect_ai.util._sandbox.docker.cleanup import project_cleanup_startup
 
         project_cleanup_startup()
         _docker_context_initialized = True
+        logger.info("Docker sandbox context initialized successfully")
     except ImportError:
         # Docker sandbox not available
-        pass
+        logger.warning("Docker sandbox not available (import failed)")
 
 
 @dataclass
@@ -78,6 +83,12 @@ async def create_sandbox_for_sample(
     Returns:
         SandboxInstance containing environments and metadata for cleanup
     """
+    sample_id = sample_info.get("inspect_sample_id", "unknown")
+    logger.debug(
+        f"Creating sandbox for sample {sample_id}: type={sandbox_config.sandbox_type}, "
+        f"task={task_name}"
+    )
+
     # Check for per-sample sandbox configuration (not yet supported)
     per_sample_sandbox = sample_info.get("inspect_sandbox")
     if per_sample_sandbox is not None:
@@ -91,6 +102,7 @@ async def create_sandbox_for_sample(
         _ensure_docker_context()
 
     # Get the sandbox environment class
+    logger.debug(f"Looking up sandbox environment class: {sandbox_config.sandbox_type}")
     sandbox_cls = registry_find_sandboxenv(sandbox_config.sandbox_type)
 
     # Resolve files using Inspect's resolution (handles data URIs, HTTP URLs, file paths)
@@ -115,6 +127,7 @@ async def create_sandbox_for_sample(
     )
 
     # Initialize sandbox environments
+    logger.debug(f"Initializing sandbox environments for sample {sample_id}")
     sandboxes = await init_sandbox_environments_sample(
         sandboxenv_type=sandbox_cls,
         task_name=task_name,
@@ -122,6 +135,10 @@ async def create_sandbox_for_sample(
         files=files_bytes,
         setup=setup_bytes,
         metadata=metadata,
+    )
+
+    logger.info(
+        f"Sandbox created for sample {sample_id}: {len(sandboxes)} environment(s) initialized"
     )
 
     return SandboxInstance(
@@ -134,6 +151,10 @@ async def create_sandbox_for_sample(
 
 async def cleanup_sandbox(instance: SandboxInstance) -> None:
     """Clean up sandbox environment(s)."""
+    logger.debug(
+        f"Cleaning up sandbox: type={instance.sandbox_type}, task={instance.task_name}, "
+        f"num_environments={len(instance.environments)}"
+    )
     await cleanup_sandbox_environments_sample(
         type=instance.sandbox_type,
         task_name=instance.task_name,
@@ -141,6 +162,7 @@ async def cleanup_sandbox(instance: SandboxInstance) -> None:
         environments=instance.environments,
         interrupted=False,
     )
+    logger.info(f"Sandbox cleanup complete for task={instance.task_name}")
 
 
 @asynccontextmanager
@@ -200,6 +222,10 @@ async def exec_in_sandbox(
     Returns:
         ExecResult with stdout, stderr, and success status
     """
+    logger.debug(
+        f"Executing command in sandbox: {' '.join(cmd)}, sandbox_name={sandbox_name}"
+    )
+
     # Get the appropriate sandbox
     sandbox: SandboxEnvironment
     if sandbox_name and sandbox_name in sandboxes:
@@ -211,9 +237,17 @@ async def exec_in_sandbox(
     else:
         raise RuntimeError("No sandbox available")
 
-    return await sandbox.exec(
+    result = await sandbox.exec(
         cmd=cmd,
         timeout=timeout,
         cwd=cwd,
         env=env or {},
     )
+
+    logger.debug(
+        f"Command execution complete: success={result.success}, "
+        f"stdout_length={len(result.stdout) if result.stdout else 0}, "
+        f"stderr_length={len(result.stderr) if result.stderr else 0}"
+    )
+
+    return result

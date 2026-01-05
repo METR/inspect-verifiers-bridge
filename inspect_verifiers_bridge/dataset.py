@@ -6,6 +6,7 @@ Uses ground truth solver execution for accurate prompt construction.
 
 import asyncio
 import json
+import logging
 import warnings
 from typing import Any
 
@@ -21,6 +22,8 @@ from inspect_ai.model import (
 )
 
 from inspect_verifiers_bridge.ground_truth import get_ground_truth_messages
+
+logger = logging.getLogger(__name__)
 
 
 async def sample_to_row(
@@ -43,12 +46,16 @@ async def sample_to_row(
     Returns:
         Dictionary with prompt, answer, info, and id fields
     """
+    logger.debug(f"Converting sample {sample.id} to dataset row")
+
     # Get ground truth messages from solver pipeline
     messages = await get_ground_truth_messages(task, sample)
     prompt_messages = [_chat_message_to_dict(msg) for msg in messages]
+    logger.debug(f"Sample {sample.id}: converted {len(messages)} messages to prompt")
 
     # Append additional content to system message if provided
     if additional_system_content:
+        logger.debug(f"Sample {sample.id}: appending additional system content")
         prompt_messages = _append_to_system_message(
             prompt_messages, additional_system_content
         )
@@ -240,13 +247,25 @@ def inspect_dataset_to_hf(
     Returns:
         A HuggingFace Dataset compatible with Verifiers
     """
+    total_samples = len(task.dataset)
+    samples_to_convert = (
+        min(total_samples, max_samples) if max_samples is not None else total_samples
+    )
+    logger.info(
+        f"Converting Inspect dataset to HuggingFace format: {samples_to_convert}/{total_samples} samples"
+    )
+
     rows = []
     for i, sample in enumerate(task.dataset):
         if max_samples is not None and i >= max_samples:
+            logger.debug(
+                f"Reached max_samples limit ({max_samples}), stopping conversion"
+            )
             break
 
         # Auto-generate ID if not set (some datasets like GSM8K don't set IDs)
         if sample.id is None:
+            logger.debug(f"Auto-generating ID for sample {i}")
             sample = Sample(
                 input=sample.input,
                 target=sample.target,
@@ -264,4 +283,5 @@ def inspect_dataset_to_hf(
             )
         )
 
+    logger.info(f"Dataset conversion complete: {len(rows)} samples converted")
     return HFDataset.from_list(rows)

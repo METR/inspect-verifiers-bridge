@@ -2,6 +2,7 @@
 Main loader: Convert Inspect tasks to Verifiers environments.
 """
 
+import logging
 from typing import Any, Callable, Literal
 
 import verifiers as vf
@@ -10,6 +11,8 @@ from inspect_ai import Task
 from inspect_verifiers_bridge import dataset as ds
 from inspect_verifiers_bridge import scoring, tasks
 from inspect_verifiers_bridge.sandbox import SandboxConfig
+
+logger = logging.getLogger(__name__)
 
 
 def load_environment(
@@ -64,14 +67,27 @@ def load_environment(
         - multi_turn + no sandbox → NotImplementedError
         - multi_turn + sandbox → InspectSandboxEnv(max_turns=N, submit tool)
     """
+    logger.info(
+        f"Loading environment: scoring_mode={scoring_mode}, env_type={env_type}, "
+        f"max_samples={max_samples}, max_turns={max_turns}"
+    )
+
     # Load and introspect the task
+    logger.debug(f"Loading Inspect task with kwargs: {task_kwargs}")
     task_info = tasks.load_inspect_task(task, **task_kwargs)
+    logger.info(
+        f"Task loaded: name={task_info.name}, sandbox_type={task_info.sandbox_type}, "
+        f"num_scorers={len(task_info.scorers)}, num_samples={len(task_info.dataset)}"
+    )
 
     # Determine if submit tool will be enabled
     will_include_submit = (
         include_submit if include_submit is not None else (env_type == "multi_turn")
     )
 
+    logger.debug(
+        f"Converting dataset to HuggingFace format, will_include_submit={will_include_submit}"
+    )
     hf_dataset = ds.inspect_dataset_to_hf(
         task_info.task,
         task_name=task_info.name,
@@ -80,11 +96,14 @@ def load_environment(
         if will_include_submit and submit_instruction is not None
         else None,
     )
+    logger.info(f"Dataset converted: {len(hf_dataset)} samples")
 
     # Determine if we need a sandbox
     effective_sandbox_type = sandbox_type or task_info.sandbox_type
+    logger.debug(f"Effective sandbox type: {effective_sandbox_type}")
 
     # Build rubric based on scoring mode
+    logger.debug(f"Building rubric with scoring_mode={scoring_mode}")
     if scoring_mode == "live":
         if not task_info.scorers:
             raise ValueError(
@@ -96,12 +115,14 @@ def load_environment(
                 f"scorer_weights has {len(scorer_weights)} elements but task has "
                 f"{len(task_info.scorers)} scorers. They must match."
             )
+        logger.info(f"Building rubric from {len(task_info.scorers)} Inspect scorers")
         rubric = scoring.build_rubric_from_scorers(
             task_info.scorers, weights=scorer_weights
         )
     elif scoring_mode == "custom":
         if custom_reward_fn is None:
             raise ValueError("custom_reward_fn is required when scoring_mode='custom'")
+        logger.info("Building rubric with custom reward function")
         rubric = vf.Rubric(funcs=[custom_reward_fn])
     else:
         raise ValueError(f"Unknown scoring_mode: {scoring_mode}")
@@ -109,6 +130,9 @@ def load_environment(
     # Environment selection based on env_type and sandbox
     if env_type == "single_turn":
         if effective_sandbox_type:
+            logger.info(
+                f"Creating InspectSandboxEnv (single_turn) with sandbox_type={effective_sandbox_type}"
+            )
             from inspect_verifiers_bridge.environment import InspectSandboxEnv
 
             return InspectSandboxEnv(
@@ -124,6 +148,7 @@ def load_environment(
                 include_bash=include_bash,
                 include_submit=False,  # No submit for single turn
             )
+        logger.info("Creating SingleTurnEnv (no sandbox)")
         return vf.SingleTurnEnv(dataset=hf_dataset, rubric=rubric)
 
     elif env_type == "multi_turn":
@@ -132,6 +157,10 @@ def load_environment(
                 "Multi-turn environment requires a sandbox. "
                 "Either use a task with sandbox configuration or specify sandbox_type."
             )
+        logger.info(
+            f"Creating InspectSandboxEnv (multi_turn) with sandbox_type={effective_sandbox_type}, "
+            f"max_turns={max_turns}, include_bash={include_bash}, include_submit={include_submit}"
+        )
         from inspect_verifiers_bridge.environment import InspectSandboxEnv
 
         return InspectSandboxEnv(

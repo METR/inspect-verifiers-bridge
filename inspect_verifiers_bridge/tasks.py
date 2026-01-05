@@ -2,12 +2,15 @@
 Task introspection and loading utilities for Inspect AI tasks.
 """
 
+import logging
 from dataclasses import dataclass, field
 from typing import Any, Callable
 
 from inspect_ai import Task
 from inspect_ai.dataset import Dataset
 from inspect_ai.scorer import Scorer
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -37,7 +40,9 @@ def load_inspect_task(
     Returns:
         InspectTaskInfo with extracted task components
     """
+    logger.debug(f"Loading task from {task_fn.__name__} with kwargs: {task_kwargs}")
     task = task_fn(**task_kwargs)
+    logger.info(f"Task loaded: {task.name or 'unknown'}")
 
     # Extract sandbox type
     sandbox_type = None
@@ -46,6 +51,7 @@ def load_inspect_task(
             sandbox_type = task.sandbox
         elif hasattr(task.sandbox, "type"):
             sandbox_type = task.sandbox.type
+        logger.debug(f"Extracted sandbox type: {sandbox_type}")
 
     # Extract scorers (normalize to list)
     scorers: list[Scorer] = []
@@ -55,11 +61,13 @@ def load_inspect_task(
             scorers = task_scorer
         else:
             scorers = [task_scorer]
+        logger.debug(f"Extracted {len(scorers)} scorer(s)")
 
     # Check if solver uses tools (simple heuristic for now)
     solver_has_tools = _solver_has_tools(task.solver)
+    logger.debug(f"Solver has tools: {solver_has_tools}")
 
-    return InspectTaskInfo(
+    task_info = InspectTaskInfo(
         task=task,
         name=task.name or "unknown",
         dataset=task.dataset,
@@ -68,6 +76,11 @@ def load_inspect_task(
         solver_has_tools=solver_has_tools,
         metadata=task.metadata or {},
     )
+    logger.info(
+        f"Task introspection complete: name={task_info.name}, "
+        f"dataset_size={len(task_info.dataset)}, num_scorers={len(scorers)}"
+    )
+    return task_info
 
 
 def _solver_has_tools(solver: Any) -> bool:

@@ -6,6 +6,7 @@ Verifiers reward function framework.
 """
 
 import json
+import logging
 import warnings
 from functools import partial
 from typing import Any, Callable
@@ -24,6 +25,8 @@ from inspect_ai.tool import ToolCall
 
 from inspect_verifiers_bridge.sandbox import sandbox_context
 from inspect_verifiers_bridge.utils import BRIDGE_MODEL_NAME
+
+logger = logging.getLogger(__name__)
 
 
 async def run_inspect_scorer(
@@ -64,6 +67,10 @@ async def run_inspect_scorer(
     # Validate sample_id is not None (can happen if Sample.id was None)
     sample_id = info["inspect_sample_id"]
     assert sample_id is not None, "sample_id cannot be None - ensure Sample.id is set"
+
+    logger.debug(
+        f"Running scorer for sample_id={sample_id}, scorer={getattr(scorer, '__name__', scorer.__class__.__name__)}"
+    )
 
     # Get the raw target from info, or fall back to answer
     target_raw = info.get("inspect_target_raw", answer)
@@ -111,11 +118,21 @@ async def run_inspect_scorer(
     score: Score | None
     sandbox_envs = state.get("_sandbox_envs")
     if sandbox_envs is not None:
+        logger.debug(f"Running scorer with sandbox context for sample_id={sample_id}")
         async with sandbox_context(sandbox_envs):
             score = await scorer(task_state, target)
     else:
         # Call scorer without sandbox context
+        logger.debug(f"Running scorer without sandbox for sample_id={sample_id}")
         score = await scorer(task_state, target)
+
+    if score is not None:
+        logger.debug(
+            f"Scorer completed for sample_id={sample_id}: value={score.value}, "
+            f"answer={score.answer}, explanation={score.explanation[:100] if score.explanation else None}"
+        )
+    else:
+        logger.warning(f"Scorer returned None for sample_id={sample_id}")
 
     return score
 
@@ -158,7 +175,9 @@ async def reward_from_inspect_scorer(
     if cache_key is not None:
         cached_scores = state.get("_cached_scores", {})
         if cache_key in cached_scores:
-            return cached_scores[cache_key]
+            cached_value = cached_scores[cache_key]
+            logger.debug(f"Using cached score for {cache_key}: {cached_value}")
+            return cached_value
 
     # Run the scorer
     score = await run_inspect_scorer(
@@ -176,7 +195,10 @@ async def reward_from_inspect_scorer(
             stacklevel=2,
         )
         return 0.0
-    return _score_to_float(score)
+
+    reward = _score_to_float(score)
+    logger.debug(f"Converted score to reward: {reward}")
+    return reward
 
 
 def _build_inspect_messages(
@@ -316,10 +338,13 @@ def build_rubric_from_scorers(
     if not scorers:
         raise ValueError("At least one scorer is required")
 
+    logger.info(f"Building rubric from {len(scorers)} scorer(s)")
+
     # Create reward functions for each scorer
     reward_funcs: list[Callable[..., Any]] = []
     for i, scorer in enumerate(scorers):
         scorer_name = _get_scorer_name(scorer)
+        logger.debug(f"Adding scorer {i}: {scorer_name}")
         # Cache key must match what InspectSandboxEnv.post_rollout uses
         cache_key = f"inspect_{scorer_name}_{i}"
         func = partial(reward_from_inspect_scorer, scorer=scorer, cache_key=cache_key)
@@ -327,4 +352,7 @@ def build_rubric_from_scorers(
         func.__name__ = cache_key  # type: ignore[attr-defined]
         reward_funcs.append(func)
 
+    logger.info(
+        f"Rubric built with {len(reward_funcs)} reward function(s), weights={weights}"
+    )
     return vf.Rubric(funcs=reward_funcs, weights=weights)  # type: ignore[arg-type]
