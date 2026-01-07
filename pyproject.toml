@@ -2,7 +2,7 @@
 name = "inspect-verifiers-bridge"
 description = "Bridge to convert Inspect AI tasks to Verifiers environments for RL training"
 version = "0.1.0"
-requires-python = "~=3.13.6"
+requires-python = ">=3.12"
 dependencies = [
     "inspect-ai~=0.3.158",
     "inspect-evals>=0.3.102",
